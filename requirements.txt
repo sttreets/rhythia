@@ -1,0 +1,3 @@
+# No third-party runtime packages.
+# Python 3.11+ with Tkinter is required; Windows installers from python.org
+# include Tcl/Tk when the "tcl/tk and IDLE" component is selected.
