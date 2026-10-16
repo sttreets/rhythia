@@ -58,12 +58,22 @@ class QuickFlowTests(unittest.TestCase):
 
     def test_quick_page_is_default_and_advanced_can_be_opened_and_hidden(self):
         self.assertEqual(self.app.tabs.select(), str(self.app.quick_panel))
+
         self.assertEqual(len([x for x in self.app.tabs.tabs() if self.app.tabs.tab(x, 'state') == 'normal']), 1)
         self.app.show_advanced('Mouse control')
         self.assertEqual(self.app.tabs.select(), str(self.app.advanced_tabs['Mouse control']))
         self.app.advanced_var.set(False)
         self.app._toggle_advanced()
         self.assertEqual(self.app.tabs.select(), str(self.app.quick_panel))
+
+
+    def test_short_window_reserves_footer_and_keeps_stop_visible(self):
+        self.root.geometry('760x650')
+        self.root.update()
+        bottom = self.root.winfo_rooty() + self.root.winfo_height()
+        for widget in (self.app.advanced_toggle, self.app.quick_panel.emergency_button):
+            self.assertTrue(widget.winfo_ismapped())
+            self.assertLess(widget.winfo_rooty() + widget.winfo_height(), bottom)
 
     def test_two_corner_setup_saves_and_ready_arms_without_creating_mouse(self):
         self.choose_map()

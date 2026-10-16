@@ -265,12 +265,17 @@ class Application:
         text.configure(state="disabled")
         for tab in self.advanced_tabs.values():
             tabs.hide(tab)
-        ttk.Checkbutton(outer, text="Show advanced settings", variable=self.advanced_var,
-                        command=self._toggle_advanced).pack(anchor="w", pady=(8, 0))
-        ttk.Separator(outer).pack(fill="x", pady=10)
-        ttk.Label(outer, textvariable=self.status_var, wraplength=800).pack(anchor="w")
-        ttk.Label(outer, textvariable=self.timing_var).pack(anchor="w", pady=(3, 0))
-        ttk.Label(outer, textvariable=self.notice_var, foreground="#a14212", wraplength=800).pack(anchor="w", pady=(3, 0))
+        # Reserve the footer before allocating the notebook: hidden advanced
+        # pages can still give the notebook a large requested height in Tk.
+        footer = ttk.Frame(outer)
+        footer.pack(side="bottom", fill="x", before=tabs)
+        self.advanced_toggle = ttk.Checkbutton(footer, text="Show advanced settings", variable=self.advanced_var,
+                                               command=self._toggle_advanced)
+        self.advanced_toggle.pack(anchor="w", pady=(8, 0))
+        ttk.Separator(footer).pack(fill="x", pady=10)
+        ttk.Label(footer, textvariable=self.status_var, wraplength=800).pack(anchor="w")
+        ttk.Label(footer, textvariable=self.timing_var).pack(anchor="w", pady=(3, 0))
+        ttk.Label(footer, textvariable=self.notice_var, foreground="#a14212", wraplength=800).pack(anchor="w", pady=(3, 0))
 
     def _toggle_advanced(self):
         if self.advanced_var.get():
@@ -726,6 +731,7 @@ class Application:
             self.run_was_live = False
         self.output_mode_var.set("Preview")
         self.set_output_mode()
+        self.engine.stop("Choose your map to get started, or preview the demo.")
         self.source_var.set(f"{self.demo.title} · {len(self.demo.notes)} synthetic notes · {self.demo.duration_ms / 1000:.1f}s\n"
                             "Generated in this tool; not a Rhythia map and no song audio is played.")
         self.start_button.configure(state="normal")
