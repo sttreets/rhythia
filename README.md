@@ -18,9 +18,10 @@ The app opens on one page. Advanced settings are hidden until you need them. Ste
 
 1. **Choose your map:** select the `.sspm` for the song you will play.
 2. **Set up playfield:** open Rhythia in windowed or borderless mode with its playfield visible. Click **Set up playfield…**, switch to Rhythia during the three-second countdown, then click the **top-left** and **bottom-right outer corners of the whole 3 × 3 playfield** in the overlay. The game window and calibration are captured together. Your settings save automatically. Escape cancels.
-3. **Ready to play:** click the button, switch to Rhythia, and check the center using **Ctrl+Alt+F9**. Start the same song yourself and press **F6** at your chosen song timeline start. **F8** stops; **Ctrl+Alt+F10** emergency stops.
+3. **Learn the song's start delay:** click **Learn timing…**, switch to Rhythia, and press **F6 as you start the song**. Press **F9 when the FIRST note should be hit**, not when it first appears. This step records timing and sends **no mouse movement**; you can do it before setting up the playfield. **F8** cancels.
+4. **Ready to play:** restart the song from the beginning, click **Ready to play**, switch to Rhythia, and check the center using **Ctrl+Alt+F9**. Press **F6 at the same moment in starting the song that you used while learning**. **F8** stops; **Ctrl+Alt+F10** emergency stops.
 
-Fresh settings use **0 seconds countdown**, **0 ms offset**, and **1× speed**. Saved settings retain your choices. With a nonzero countdown, press F6 that many seconds before the song timeline starts. The tool does not start or detect audio, and manual timing still needs checking in the game. If the game cursor ignores Absolute screen, select **Relative calibrated**, open **Relative mode settings**, and follow the calibration instructions below.
+Fresh settings use **0 seconds start delay**, **0 ms offset**, **1× speed**, and **smooth movement**. Saved settings retain your choices. Zero delay assumes F6 coincides with the map's timeline origin; the game's actual lead-in is unknown. Learning estimates the delay from your timing marks at song start and the first note's intended hit time. The first/next-note clock and speed are visible on Quick start. The tool does not start or detect audio, and manual timing still needs checking in the game. If the game cursor ignores Absolute screen, select **Relative calibrated**, open **Relative mode settings**, and follow the calibration instructions below.
 
 **Rhythia must be running and focused.** Loading a map does not launch the game, select its song, or play audio. Do not click the centers of the corner cells during setup. After restarting the tool, repeat setup to select the correct game window. Stop and restart the song after losing focus, changing its window/display, or pausing live playback.
 
@@ -28,7 +29,7 @@ Fresh settings use **0 seconds countdown**, **0 ms offset**, and **1× speed**. 
 
 If you prefer the source, [download its ZIP](https://github.com/sttreets/rhythia/archive/refs/heads/main.zip), choose **Extract All**, install **64-bit Windows Python 3.11–3.14** with **Tcl/Tk and IDLE** and the **Python Launcher** from [python.org](https://www.python.org/downloads/windows/), then double-click **run.bat** in **rhythia-main**. No third-party runtime packages are needed. The launcher creates/reuses `.venv`; run it in Command Prompt to retain any error message.
 
-**Show advanced settings** reveals map preview, numeric calibration, custom hotkeys, playback speed, relative sensitivity and detailed instructions. Save edited settings, or use **Ready to play** to apply the current form. Merely editing fields does not change an active run. The advanced Playback button **Apply live settings (then F6)** also applies fields without moving the cursor; use F6 from the focused game to begin.
+**Show advanced settings** reveals map preview, numeric calibration, custom hotkeys, playback speed, relative sensitivity and detailed instructions. Save edited settings, or use **Ready to play** to apply the current form. Changing settings during live playback stops the run. After editing, F6 refuses to start until the new settings are applied; click **Ready to play**, then restart the song. This prevents an edited delay from silently leaving F6 on an older saved value. The advanced Playback button **Apply live settings (then F6)** also applies fields without moving the cursor; use F6 from the focused game to begin.
 
 Calibration uses physical desktop pixels and a captured foreground window. The guided selector places its overlay over that window, including monitors with negative coordinates. If an exclusive fullscreen game hides the field when the overlay appears, use windowed/borderless mode or Advanced → Calibration's delayed corner captures. The whole calibrated field must fit inside the captured window.
 
@@ -53,7 +54,24 @@ There is no automatic homing, cursor-position feedback, or game sensitivity dete
 
 ## Synchronization
 
-The tool does not start or pause Rhythia, monitor song audio, detect the gameplay state, or change the game's speed. You start the same map in the game and use the global start hotkey while Rhythia has focus. Choose an observable event that you can repeat, such as the beginning of the game's song timeline. Set countdown to the measured delay from that event to the map's timestamp origin; do not assume a countdown matches Rhythia's own song-start delay.
+The tool does not start or pause Rhythia, monitor song audio, detect the gameplay state, or change the game's speed. You start the same map in the game and use the global start hotkey while Rhythia has focus. Choose an observable event you can repeat, such as clicking the game's song-start control. The **Start delay** field is the delay from that event to the map's timestamp origin. A game's own lead-in is not detected automatically.
+
+### Learn timing without moving the mouse
+
+1. Choose the map and match the visible **Speed** to the game's speed; normally both are **1×**. Keep the timing offset at zero while learning unless you have deliberately calibrated another value.
+2. Click **Learn timing…**. No captured window or playfield calibration is needed for this measurement. Resolve any hotkey error first.
+3. Focus Rhythia. Start the song and press **F6 at the same reference moment**. Learning records that time; it does not start mouse playback.
+4. Press **F9 when the first note should be hit**. Mark the judgment time, **not the note's first appearance or an earlier approach animation**. The app computes and saves the start delay:
+
+   ```text
+   start delay = time from F6 to F9 − first map timestamp / speed − timing offset
+   ```
+
+5. **Restart the song from the beginning.** Click **Ready to play**, return to Rhythia, and press F6 at the **same reference moment** used in step 3. Complete playfield setup first if you have not done it yet. Reset the relative cursor anchor before playback when using relative input.
+
+F8 or the emergency stop cancels learning. Learning sends no mouse input, including while waiting for F9. It is a manual measurement, so an inaccurate F9 press still produces an inaccurate alignment. Learn again if the song, game speed, timing offset, or start reference changes. F9 is reserved for the timing marker; **Ctrl+Alt+F9** remains the separate cursor calibration probe.
+
+### Note clock and movement timing
 
 Each note is scheduled using a monotonic high-resolution clock:
 
@@ -61,9 +79,9 @@ Each note is scheduled using a monotonic high-resolution clock:
 note deadline = F6 time + countdown + timing offset + map timestamp / speed
 ```
 
-A positive offset emits later; a negative offset emits earlier and may cause movement during countdown. Offset is in wall-clock milliseconds. The tool's speed must match the speed actually selected in the game; changing it here does not change game audio. For the supplied map, the first note is at **491 ms**, so with zero countdown/offset and speed 1.0 it is scheduled 491 ms after F6, not immediately at F6.
+A positive offset emits later; a negative offset emits earlier and may cause movement during countdown. Offset is in wall-clock milliseconds. The tool's speed must match the speed actually selected in the game; changing it here does not change game audio. For the supplied map, the first note is at **491 ms**, so with zero start delay/offset and speed 1.0 its original deadline is 491 ms after F6. Smooth movement can position the cursor at that endpoint up to **12 ms before** the deadline; it does not remove the map's lead-in. If playback is consistently early with zero start delay, learn the game's lead-in instead of assuming that every map starts when you press F6.
 
-Test short runs, observe the timing, and adjust your chosen start event or offset. Windows scheduling and human hotkey timing introduce jitter. These controls provide manual alignment, not automatic audio synchronization; Steam-specific timestamp origin, song-start latency, and judging behavior remain unverified. A precise clock alone cannot establish synchronization with a separate song.
+Test short runs, observe the timing, and adjust your chosen start event or offset. The first/next-note clock reports the scheduled map timeline; it does not observe the game's judgments. Windows scheduling and human hotkey timing introduce jitter. While live playback is active, the worker requests a **2 ms sleep** using Python's Windows high-resolution waitable timer ([CPython 3.11 documentation](https://github.com/python/cpython/blob/v3.11.0/Doc/library/time.rst)). This improves the wake-up mechanism, but the operating system may wake the thread late; there is no hard real-time guarantee. These controls provide manual alignment, not automatic audio synchronization; Steam-specific timestamp origin, song-start latency, and judging behavior remain unverified. A precise clock alone cannot establish synchronization with a separate song.
 
 **Live pause cancels playback and disarms input.** Restart the song from the beginning, restore the relative anchor if needed, and press F6 for a fresh run. The same restart procedure applies after focus loss, an emergency stop, timing loss, or an error. Preview pause can resume its own simulated timeline; it does not pause the game's audio.
 
@@ -76,14 +94,15 @@ The live lateness cutoff defaults to **50 ms**, configurable from **1–250 ms**
 | Start live playback / start or resume preview | F6 |
 | Pause preview / cancel live playback | F7 |
 | Stop | F8 |
+| Mark first note's hit time while learning | F9, fixed |
 | Single calibration probe | Ctrl+Alt+F9, fixed |
 | Emergency stop | Ctrl+Alt+F10, fixed |
 
-Start/pause/stop bindings are configurable, for example `F6`, `Ctrl+Alt+S`, or `Shift+A`. The probe and emergency bindings stay reserved. [Windows reserves F12 for debuggers](https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winuser/nf-winuser-registerhotkey.md), so it cannot be used. If any hotkey registration fails, live playback remains unavailable; choose unused bindings or close the conflicting program. On Linux, use the buttons for preview only.
+Start/pause/stop bindings are configurable, for example `F6`, `Ctrl+Alt+S`, or `Shift+A`. F9 and the probe/emergency bindings stay reserved. If you customize the start key, use that key in place of F6 throughout the learning and playback instructions. [Windows reserves F12 for debuggers](https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winuser/nf-winuser-registerhotkey.md), so it cannot be used. If any hotkey registration fails, live playback and timing learning remain unavailable; choose unused bindings or close the conflicting program. On Linux, use the buttons for preview only.
 
 Live input checks the captured foreground window, process identity, rectangle, and DPI before each movement and while running. It stops if those change, input fails, hotkeys fail, or timing falls behind. Restoring focus does not resume the old run. Foreground inspection and `SendInput` are separate Windows calls, so a focus switch in the tiny interval between them cannot be made atomic. Closing the tool stops and disarms its session.
 
-Saving settings stops playback. Settings live in `%LOCALAPPDATA%\RhythiaTool\settings.json` on Windows, or `$XDG_CONFIG_HOME/rhythia-tool/settings.json` / `~/.config/rhythia-tool/settings.json` on Linux. `--settings PATH` selects another file. No game credentials are stored. The captured target window and choice of live output are deliberately not saved across launches. Damaged settings are reported and preserved until you explicitly save a replacement. Older preview-only cursor-mode preferences reset to **Unverified** and need a fresh mode selection/calibration.
+Editing live settings or saving them stops playback. Apply changes with **Ready to play** before using F6 again. Settings live in `%LOCALAPPDATA%\RhythiaTool\settings.json` on Windows, or `$XDG_CONFIG_HOME/rhythia-tool/settings.json` / `~/.config/rhythia-tool/settings.json` on Linux. `--settings PATH` selects another file. No game credentials are stored. The captured target window and choice of live output are deliberately not saved across launches. Damaged settings are reported and preserved until you explicitly save a replacement. Older preview-only cursor-mode preferences reset to **Unverified** and need a fresh mode selection/calibration.
 
 ## Maps and compatibility evidence
 
@@ -91,7 +110,13 @@ The parser follows the public [SSPM v2 specification](https://github.com/basils-
 
 The supplied **Sporty-O - Let Me Hit It (Audiostalkers Original Mix)(Cut Ver.)** map identifies mapper **dxprso** and has **220 notes**, from **491 ms to 31,897 ms**. It was parsed and simulated without moving the desktop cursor. Quantum/off-grid positions are retained. Preview expands to show them; live playback uses the fixed `[-0.5, 2.5]` frame and rejects any map with a note outside it before enabling input. Live coordinates are not rescaled to each map's extents.
 
-Live playback jumps to note positions at their scheduled timestamps; it does not synthesize a smooth path. Equal-time notes are sent in file order, but a single cursor cannot guarantee judgments at different positions simultaneously. Whether a movement is accepted and judged depends on the game's actual input and hit rules, which have not been established for this Steam build.
+### Smooth cursor movement
+
+**Smooth movement is enabled by default.** Between notes, the cursor follows a straight path with minimum-jerk easing: it accelerates gradually and slows toward the destination. The default approach window is **120 ms**, with an arrival lead of **12 ms**, measured on the map timeline. At 1× speed those values are also wall-clock milliseconds; changing speed scales them with the map. The original note timestamps and note count stay unchanged. Quick start has the smooth-movement switch; advanced **Mouse control** contains the travel and early-arrival values.
+
+The cursor holds the previous note through long gaps, approaches the next note near its deadline, then holds its endpoint through the note time. Closely spaced notes shorten the arrival lead and hold interval so they do not consume the gap. The tool does not know the physical cursor's starting location: before the first note it waits until that note's arrival lead, then sends its endpoint directly. It does not invent a starting position or move along a guessed first path. Relative mode still requires your manual starting anchor.
+
+The motion follows deterministic paths and keeps note timestamps. It still requires correct start-delay calibration and compatible game input. Disable smooth movement to send only the scheduled note endpoints. Equal-time notes remain in file order, but one cursor cannot guarantee judgments at different positions simultaneously. Whether a movement is accepted and judged depends on the game's actual input and hit rules, which have not been established for this Steam build.
 
 The sample contains embedded MP3 and PNG signatures. Media is not decoded, extracted, or played. Its all-zero marker SHA-1 produces an integrity warning; 24 footer bytes outside the declared blocks are ignored. A nonzero checksum mismatch is an error. Neither the uploaded map nor its media is included in the repository; tests generate their own fixtures.
 
@@ -152,7 +177,7 @@ python3 scripts/cloud_validate.py
 
 The cloud validation starts and cleans up an isolated Xvfb display when Linux is headless. Without a display, ordinary unittest discovery skips Tk tests; a skipped run is not equivalent to full validation.
 
-Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls and the live-mode prerequisites using fakes. The full cloud run passed **198 tests with no skips**, including guided setup, two-corner selection, emergency cancellation during setup, and release packaging with a fake API. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse (220 events each); no OS input was sent.
+The full Linux validation passed **235 tests without skips**. Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls, live-mode prerequisites, guided setup, two-corner selection, and emergency cancellation using fakes. Deterministic path tests check first-note timing, long-gap holds, close gaps, endpoints, and invalid input; release packaging tests use a fake API. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse in the earlier endpoint-only implementation (220 events each); no OS input was sent. Consult Build status for the exact revision's Windows test and packaged executable results.
 
 **Native Windows input and hotkeys, physical display/DPI behavior, Windows batch execution, Steam gameplay, actual song synchronization, and RP acceptance have not been tested in this Linux environment.** The separate Windows workflow records its source-test, packaging and executable smoke-check results in Build status. Simulated tests establish the tool's logic, not the game's acceptance of input or scores.
 
@@ -163,14 +188,18 @@ Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, previe
 | Python or Tkinter unavailable | Install supported x64 Windows Python with Tcl/Tk. Rename an incompatible `.venv`, then rerun `run.bat`. |
 | Launcher closes too quickly | Open Command Prompt in this folder and run `run.bat` to retain the error. |
 | Nothing moves | Confirm Windows mouse output, a real SSPM map, calibrated mode, registered hotkeys, and the captured Rhythia window focused. Start with F6; clicking Apply live settings only applies fields. |
+| F6 says settings changed | Click Ready to play to apply the edited start delay, speed, or other settings, then restart the song and use F6 again. Editing during live playback stops the old run. |
 | Probe moves desktop pointer but not game cursor | The selected game input mode may not accept that movement. Test a supported game cursor setting or relative calibration; desktop movement is not evidence of Steam compatibility. |
 | Relative playback drifts | Reset the game cursor to the configured anchor before each run. Recheck sensitivity, acceleration, counts, and inversion; avoid physical mouse movement during playback. Stop if clamping or drift invalidates calibration. |
 | Cursor is shifted after a display/window change | Recapture the window and recalibrate physical-pixel bounds at the final resolution, monitor, and scale. |
 | Window capture fails | Click Capture foreground window, then switch to Rhythia within three seconds. The tool itself is not a valid target. |
 | Live playback refuses a map | Read the error. The full field must fit inside the captured window; every note must lie inside `[-0.5, 2.5]`. Unsupported formats/custom marker schemas are rejected. |
-| Hotkey registration error | Choose unused bindings or close the conflicting program. Ctrl+Alt+F9/F10 are reserved; F12 cannot be used. Live playback requires working hotkeys. |
+| Hotkey registration error | Choose unused bindings or close the conflicting program. F9 and Ctrl+Alt+F9/F10 are reserved; F12 cannot be used. Live playback and timing learning require working hotkeys. |
 | It stops after Alt+Tab, window movement, or pausing | Expected. Restart the song, recapture/recalibrate if needed, restore the relative anchor, and start fresh with F6. |
-| Timing is wrong or a lateness error appears | Stop and restart from the chosen song origin. Check countdown/offset/speed; the tool does not detect audio or pause the game. Address scheduling delays before increasing the cutoff. |
+| Notes are consistently early | Click Learn timing… and mark the first note's intended hit time with F9. Restart the song, click Ready to play, and use F6 at the same start reference. Zero delay does not account for the game's unknown lead-in. Smooth motion's default arrival lead is only 12 ms at 1×. |
+| Learning gives the wrong delay | Mark when the first note should be hit, not when it appears. Match map and speed, start F6 at a repeatable moment, and repeat learning. Do not continue the partly played learning run; restart the song. |
+| Cursor jumps to the first note | Expected: the physical starting cursor position is unknown. The first endpoint is sent near its deadline; later notes use smooth paths when enabled. Relative mode still needs the configured starting anchor. |
+| Timing is wrong or a lateness error appears | Stop and restart from the chosen song origin. Check start delay/offset/speed; the tool does not detect audio or pause the game. Learning addresses repeatable start alignment, not scheduling delays. Address those delays before increasing the cutoff. |
 | Preview is silent despite embedded audio | Expected. Rhythia plays the song; the tool does not decode or play map audio. |
 | Map checksum/trailing-bytes warning | All-zero marker SHA-1 means integrity is unverified; footer bytes outside declared blocks are ignored. A nonzero checksum mismatch is rejected. |
 | Settings cannot be saved | Check permissions or choose a writable file with `--settings`; administrator access is not needed. |

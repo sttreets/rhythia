@@ -21,19 +21,24 @@ class QuickStartTests(unittest.TestCase):
         self.app = SimpleNamespace(
             vars={"input_mode": tk.StringVar(self.root, value="Unverified"),
                   "countdown_s": tk.StringVar(self.root, value="0"),
-                  "offset_ms": tk.StringVar(self.root, value="0")},
+                  "offset_ms": tk.StringVar(self.root, value="0"),
+                  "speed": tk.StringVar(self.root, value="1"),
+                  "smooth_motion": tk.BooleanVar(self.root, value=True)},
             quick_setup_var=tk.StringVar(self.root, value="Open Rhythia and choose Guided setup."),
+            next_note_var=tk.StringVar(self.root, value="First map note: 0.491s. Not playing."),
+            timing_learning="off",
             status_var=tk.StringVar(self.root, value="Ready."), loaded_map=None, pending_map=None,
             chart=SimpleNamespace(title="Demo", notes=(1, 2, 3), duration_ms=12345),
             target=None, calibration_pending=False, live_preparing=False, active_run_live=False,
             live_requested=False, hotkeys=SimpleNamespace(last_error=None), hotkey_signature=(("start", "F6"),),
             settings=SimpleNamespace(start_hotkey="F6", stop_hotkey="F8", input_mode=ABSOLUTE_MODE,
-                                     countdown_s=0, offset_ms=0),
+                                     countdown_s=0, offset_ms=0, speed=1, smooth_motion=True),
             engine=SimpleNamespace(snapshot=lambda: self.snapshot),
             _hotkey_mapping=lambda _: {"start": "F6"},
             pick_map=lambda: self.calls.append("pick"), quick_setup=lambda: self.calls.append("setup"),
             quick_ready=lambda: self.calls.append("ready"), stop=lambda: self.calls.append("stop"),
             emergency_stop=lambda: self.calls.append("emergency"),
+            learn_timing=lambda: self.calls.append("learn"),
             show_advanced=lambda tab: self.calls.append(("advanced", tab)),
         )
         self.panel = QuickStartPanel(self.root, self.app)
@@ -137,7 +142,8 @@ class QuickStartTests(unittest.TestCase):
     def test_edits_after_ready_require_applying_again(self):
         self.select_map_and_window()
         self.app.live_requested = True
-        for key, value in (("countdown_s", "3"), ("offset_ms", "10"), ("input_mode", RELATIVE_MODE)):
+        for key, value in (("countdown_s", "3"), ("offset_ms", "10"), ("input_mode", RELATIVE_MODE),
+                           ("speed", "4"), ("smooth_motion", False)):
             original = self.app.vars[key].get()
             self.app.vars[key].set(value)
             self.panel.refresh()
@@ -147,17 +153,58 @@ class QuickStartTests(unittest.TestCase):
         self.panel.refresh()
         self.assertIn("apply these choices", self.panel.readiness_var.get())
 
-    def test_timing_guide_matches_countdown_and_configured_hotkeys(self):
+    def test_timing_guide_matches_start_delay_and_configured_hotkeys(self):
         self.assertIn("F6 at song timeline start", self.panel.guide_var.get())
         self.app.vars["countdown_s"].set("3")
         self.app.settings.start_hotkey = "Ctrl+S"
         self.app.settings.stop_hotkey = "Ctrl+X"
         self.panel.refresh()
-        self.assertIn("Ctrl+S one countdown before", self.panel.guide_var.get())
+        self.assertIn("Ctrl+S as you start the game", self.panel.guide_var.get())
         self.assertIn("Ctrl+X stops", self.panel.guide_var.get())
         self.assertIn("does not start audio", self.panel.guide_var.get())
         self.app.vars["countdown_s"].set("invalid")
         self.panel.refresh()  # Editing timing never causes a refresh exception.
+
+    def test_learning_requires_map_but_not_window_and_only_delegates_explicit_click(self):
+        self.assertTrue(self.panel.learn_button.instate(["disabled"]))
+        self.app.loaded_map = object()
+        self.panel.refresh()
+        self.assertIsNone(self.app.target)
+        self.assertTrue(self.panel.learn_button.instate(["!disabled"]))
+        self.assertEqual(self.calls, [])
+        self.panel.learn_button.invoke()
+        self.assertEqual(self.calls, ["learn"])
+        self.assertIn("F6 as you start the game", self.panel.learning_hint_var.get())
+        self.assertIn("SHOULD BE HIT, not when it first appears", self.panel.learning_hint_var.get())
+        self.assertIn("no mouse input", self.panel.learning_hint_var.get())
+
+    def test_learning_states_disable_ready_and_show_current_step_without_hiding_stop(self):
+        self.select_map_and_window()
+        for state, expected in (("armed", "F6 as you start the game"),
+                                ("waiting", "F9 when the first note SHOULD BE HIT")):
+            self.app.timing_learning = state
+            self.panel.refresh()
+            self.assertTrue(self.panel.ready_button.instate(["disabled"]))
+            self.assertTrue(self.panel.setup_button.instate(["disabled"]))
+            self.assertTrue(self.panel.learn_button.instate(["!disabled"]))
+            self.assertTrue(self.panel.emergency_button.instate(["!disabled"]))
+            self.assertIn(expected, self.panel.learning_hint_var.get())
+            self.assertIn("Stop cancels", self.panel.readiness_var.get())
+        self.app.timing_learning = "off"
+        self.panel.refresh()
+        self.assertTrue(self.panel.ready_button.instate(["!disabled"]))
+
+    def test_speed_smoothness_and_next_note_are_visible_shared_settings(self):
+        self.app.vars["speed"].set("4")
+        self.assertEqual(self.panel.speed_selector.get(), "4")
+        self.panel.speed_selector.set("1")
+        self.assertEqual(self.app.vars["speed"].get(), "1")
+        self.panel.smooth_checkbutton.invoke()
+        self.assertFalse(self.app.vars["smooth_motion"].get())
+        self.assertEqual(self.panel.next_note_label.cget("textvariable"), str(self.app.next_note_var))
+        self.app.next_note_var.set("Next note in 0.125s · first map note 0.491s")
+        self.root.update()
+        self.assertIn("added to every note", self.panel._delay_help_var.get())
 
     def test_page_fits_beginner_window_without_hiding_stop(self):
         self.assertLessEqual(self.panel.winfo_reqheight(), 660)

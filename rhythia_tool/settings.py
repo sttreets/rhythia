@@ -34,6 +34,9 @@ class Settings:
     invert_x: bool = False
     invert_y: bool = False
     live_lateness_ms: float = 50.0
+    smooth_motion: bool = True
+    approach_ms: float = 120.0
+    arrival_lead_ms: float = 12.0
     start_hotkey: str = "F6"
     pause_hotkey: str = "F7"
     stop_hotkey: str = "F8"
@@ -45,6 +48,7 @@ class Settings:
             ("speed", 0.1, 4), ("dpi_percent", 25, 800),
             ("counts_per_unit_x", 0.001, 100000), ("counts_per_unit_y", 0.001, 100000),
             ("anchor_x", -0.5, 2.5), ("anchor_y", -0.5, 2.5), ("live_lateness_ms", 1, 250),
+            ("approach_ms", 10, 1000), ("arrival_lead_ms", 0, 100),
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -58,7 +62,7 @@ class Settings:
                 raise SettingsError(f"{name} must be a whole number between {low} and 100000.")
         if self.input_mode not in ("Unverified", "Absolute screen", "Relative calibrated"):
             raise SettingsError("Unknown cursor input mode.")
-        for name in ("invert_x", "invert_y"):
+        for name in ("invert_x", "invert_y", "smooth_motion"):
             if type(getattr(self, name)) is not bool:
                 raise SettingsError(f"{name} must be true or false.")
         for name in ("start_hotkey", "pause_hotkey", "stop_hotkey"):

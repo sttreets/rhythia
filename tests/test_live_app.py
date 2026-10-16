@@ -126,6 +126,7 @@ class LiveApplicationTests(unittest.TestCase):
             "left": 10, "top": 20, "width": 300, "height": 300,
             "input_mode": input_mode, "countdown_s": countdown,
             "speed": 4, "live_lateness_ms": 250,
+            "smooth_motion": False,
         }.items():
             self.app.vars[name].set(str(value))
         self.app.settings = self.app._form_settings()

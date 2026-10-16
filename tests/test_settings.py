@@ -8,6 +8,18 @@ from rhythia_tool.settings import Settings, SettingsError, load_settings, save_s
 
 
 class SettingsTests(unittest.TestCase):
+    def test_motion_options_round_trip_and_invalid_controls_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            expected = replace(Settings(), smooth_motion=False, approach_ms=80, arrival_lead_ms=0)
+            save_settings(path, expected)
+            self.assertEqual(load_settings(path), expected)
+        for values in ({"smooth_motion": "true"}, {"approach_ms": 0},
+                       {"approach_ms": float("nan")}, {"arrival_lead_ms": -1},
+                       {"arrival_lead_ms": 101}):
+            with self.subTest(values=values), self.assertRaises(SettingsError):
+                replace(Settings(), **values).validate()
+
     def test_round_trip_with_unicode_path_and_negative_monitor_origin(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "nested" / "settings.json"

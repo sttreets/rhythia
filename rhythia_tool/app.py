@@ -20,6 +20,7 @@ from .calibration_ui import PlayfieldSelector
 from .demo import load_demo
 from .live import ABSOLUTE_MODE, RELATIVE_MODE, LiveCalibration, LiveSession
 from .mouse import WindowsMouse
+from .motion import SmoothPath
 from .playback import PlaybackEngine, PlaybackState
 from .quickstart import QuickStartPanel
 from .settings import Settings, SettingsError, default_settings_path, load_settings, save_settings
@@ -54,6 +55,14 @@ class Application:
         self.mouse_factory = mouse_factory
         self.live_requested = False
         self.live_session = None
+        self.motion_path = None
+        self.last_motion_point = None
+        self.timing_learning = "off"
+        self.learning_reference_ns = None
+        self.learning_first_s = None
+        self.live_settings_dirty = False
+        self.edited_settings_snapshot = self.settings
+        self.form_revision = 0
         self.pending_live_start = None
         self.live_preparing = False
         self.active_run_live = False
@@ -94,8 +103,12 @@ class Application:
         self.guard_var = tk.BooleanVar(value=False)
         self.notice_var = tk.StringVar(value=self.settings_warning)
         self.quick_setup_var = tk.StringVar(value="Open Rhythia, then set up the playfield. Your calibration will be saved.")
+        self.next_note_var = tk.StringVar(value="Choose a map to see its first note time.")
         self.advanced_var = tk.BooleanVar(value=False)
         self._build_ui()
+        for name, variable in self.vars.items():
+            if name != "last_map_path":
+                variable.trace_add("write", self._on_settings_edited)
         self.load_synthetic()
         self._register_hotkeys()
         self.worker = threading.Thread(target=self._pump, name="preview-scheduler", daemon=True)
@@ -178,7 +191,7 @@ class Application:
                   "Use the global start hotkey with the captured window focused when the focus guard is enabled.",
                   wraplength=700).grid(row=13, column=0, columnspan=3, sticky="w")
 
-        timing_fields = [("countdown_s", "Countdown (seconds, 0–3600)"),
+        timing_fields = [("countdown_s", "Start delay (seconds, 0–3600)"),
                          ("offset_ms", "Timing offset (ms, −5000 to +5000)"),
                          ("speed", "Playback speed (0.1–4×)"),
                          ("live_lateness_ms", "Live lateness cutoff (ms, 1-250)"),
@@ -187,7 +200,7 @@ class Application:
         for row_number, (key, label) in enumerate(timing_fields):
             ttk.Label(settings_tab, text=label).grid(row=row_number, column=0, sticky="w", pady=7)
             ttk.Entry(settings_tab, textvariable=self.vars[key], width=24).grid(row=row_number, column=1, sticky="w", padx=12)
-        ttk.Label(settings_tab, text="Emergency stop: Ctrl+Alt+F10 (fixed). Examples: F6, Ctrl+Alt+S.\n"
+        ttk.Label(settings_tab, text="Emergency stop: Ctrl+Alt+F10. Timing mark: F9 (both fixed).\n"
                   "Positive offset emits later; negative offset may emit during countdown.\n"
                   "Speed scales note timestamps; offset stays in wall-clock milliseconds.\n"
                   "Save timing/calibration changes before starting via global hotkeys.\n"
@@ -206,6 +219,11 @@ class Application:
         for row_number, (key, label) in enumerate(relative_fields, 1):
             ttk.Label(mouse_tab, text=label).grid(row=row_number, column=0, sticky="w", pady=6)
             ttk.Entry(mouse_tab, textvariable=self.vars[key], width=18).grid(row=row_number, column=1, sticky="w", padx=12)
+        ttk.Label(mouse_tab, text="Smooth movement", font=("Segoe UI", 11, "bold")).grid(row=0, column=2, columnspan=2, sticky="w", padx=(14, 0))
+        ttk.Checkbutton(mouse_tab, text="Enable smooth movement", variable=self.vars["smooth_motion"]).grid(row=1, column=2, columnspan=2, sticky="w", padx=(14, 0))
+        for row_number, key, label in ((2, "approach_ms", "Travel time (ms)"), (3, "arrival_lead_ms", "Arrive early (ms)")):
+            ttk.Label(mouse_tab, text=label).grid(row=row_number, column=2, sticky="w", padx=(14, 4))
+            ttk.Entry(mouse_tab, textvariable=self.vars[key], width=8).grid(row=row_number, column=3, sticky="w")
         ttk.Checkbutton(mouse_tab, text="Invert horizontal movement", variable=self.vars["invert_x"]).grid(row=5, column=0, columnspan=2, sticky="w", pady=5)
         ttk.Checkbutton(mouse_tab, text="Invert vertical movement", variable=self.vars["invert_y"]).grid(row=6, column=0, columnspan=2, sticky="w", pady=5)
         probes = ttk.Frame(mouse_tab)
@@ -361,10 +379,45 @@ class Application:
         except (ValueError, RuntimeError, OSError) as exc:
             self._error(str(exc))
 
+    def learn_timing(self):
+        if not IS_WINDOWS or self.loaded_map is None or self.pending_map is not None:
+            self._error("Choose your map on Windows before learning its start delay.")
+            return
+        if self.calibration_pending:
+            self._error("Finish playfield setup before learning timing.")
+            return
+        if not self.save_form():
+            return
+        if (self.hotkeys is None or self.hotkeys.last_error or
+                self.hotkey_signature != tuple(self._hotkey_mapping(self.settings).items())):
+            self._error("Resolve the hotkey error before learning timing; F6 and F9 must be available.")
+            return
+        self.output_mode_var.set("Preview")
+        self.set_output_mode()
+        key = self.settings.start_hotkey
+        with self.control_lock:
+            self._cancel_locked(f"Learn timing: focus Rhythia. Press {key} as you start the song, then F9 when its FIRST note should be hit. No mouse input is sent.")
+            self.timing_learning = "armed"
+            self.learning_first_s = self.loaded_map.notes[0].time_ms / 1000 / self.settings.speed + self.settings.offset_ms / 1000
+        self.quick_setup_var.set(f"Learning only: start the song and press {key} together. Press F9 when the FIRST note should be hit (not when it first appears). {self.settings.stop_hotkey} cancels.")
+
+    def _mark_timing_locked(self, reference_ns):
+        if self.timing_learning != "waiting" or self.learning_reference_ns is None:
+            return
+        elapsed_s = (reference_ns - self.learning_reference_ns) / 1_000_000_000
+        delay_s = elapsed_s - self.learning_first_s
+        if not 0 <= delay_s <= 3600:
+            self._cancel_locked("Timing could not be measured. Learn again and mark the FIRST note's hit time.")
+            self.events.put(("error", "Mark the first note when it should be hit, after starting the song with F6. The measured delay was outside the supported range."))
+            return
+        delay_s = round(delay_s, 3)
+        self._cancel_locked("Start delay measured. Applying it; restart the song before playback.")
+        self.events.put(("learned_timing", (self.control_generation, self._current_intent(), self.loaded_map, delay_s, self.form_revision)))
+
     def _form_settings(self) -> Settings:
         values = {name: variable.get() for name, variable in self.vars.items()}
         for key in ("countdown_s", "offset_ms", "speed", "dpi_percent", "counts_per_unit_x",
-                    "counts_per_unit_y", "anchor_x", "anchor_y", "live_lateness_ms"):
+                    "counts_per_unit_y", "anchor_x", "anchor_y", "live_lateness_ms", "approach_ms", "arrival_lead_ms"):
             try:
                 values[key] = float(values[key])
             except ValueError as exc:
@@ -382,7 +435,24 @@ class Application:
     @staticmethod
     def _hotkey_mapping(settings):
         return {"start": settings.start_hotkey, "pause": settings.pause_hotkey,
-                "stop": settings.stop_hotkey, "emergency": "Ctrl+Alt+F10", "probe": "Ctrl+Alt+F9"}
+                "stop": settings.stop_hotkey, "emergency": "Ctrl+Alt+F10", "probe": "Ctrl+Alt+F9", "mark": "F9"}
+
+    def _on_settings_edited(self, *_):
+        # Tk traces run synchronously on the UI thread. A global Start must
+        # never read Tk or silently use stale values from before these edits.
+        self.form_revision += 1
+        try:
+            edited = self._form_settings()
+            dirty = replace(edited, last_map_path="") != replace(self.settings, last_map_path="")
+        except (ValueError, RuntimeError):
+            edited = None
+            dirty = True
+        self.edited_settings_snapshot = edited
+        self.live_settings_dirty = dirty
+        if dirty and (self.active_run_live or self.live_preparing or self.timing_learning != "off"):
+            self._signal_stop()
+            with self.control_lock:
+                self._cancel_locked("Settings edited. Click Ready to play to apply them before restarting.")
 
     def _emit_note(self, note):
         if self.stop_signal.is_set():
@@ -394,12 +464,15 @@ class Application:
             if raw.time_ms != note.time_ms:
                 raise RuntimeError("Live note timing no longer matches the selected map.")
             self.live_session.emit(raw)
+            self.last_motion_point = (raw.x, raw.y)
         self.output_index += 1
         self.events.put(("note", (self.preview_generation, note)))
 
     def _close_live_locked(self):
         session, self.live_session = self.live_session, None
         self.active_run_live = False
+        self.motion_path = None
+        self.last_motion_point = None
         if session is not None:
             try:
                 session.close()
@@ -410,6 +483,9 @@ class Application:
         self.stop_signal.set()
         self.pending_live_start = None
         self.live_preparing = False
+        self.timing_learning = "off"
+        self.learning_reference_ns = None
+        self.learning_first_s = None
         self._close_live_locked()
         self.control_generation += 1
         self.engine.stop(reason)
@@ -476,6 +552,12 @@ class Application:
             intent_generation = self._current_intent()
         if reference_ns is None:
             reference_ns = time.perf_counter_ns()
+        if self.timing_learning != "off":
+            if self.timing_learning == "armed":
+                self.learning_reference_ns = reference_ns
+                self.timing_learning = "waiting"
+                self.engine.stop("Learning timing: press F9 when the FIRST note should be hit. No mouse input is sent; F8 cancels.")
+            return
         if self.calibration_pending:
             raise RuntimeError("Wait for the calibration capture to finish before starting playback.")
         if self.pending_map is not None:
@@ -485,6 +567,9 @@ class Application:
             return
         if self.live_preparing:
             return
+        if self.live_requested and (self.edited_settings_snapshot is None or
+                replace(self.edited_settings_snapshot, last_map_path="") != replace(self.settings, last_map_path="")):
+            raise RuntimeError("Your settings changed. Click Ready to play to apply the new start delay and other settings before pressing Start.")
         if state == PlaybackState.PAUSED and not self.live_requested:
             if self._clear_stop_for_start(intent_generation):
                 self.engine.resume()
@@ -542,6 +627,8 @@ class Application:
             session = LiveSession(request["calibration"], request["target"], request["map"].notes,
                                   mouse_factory=self.mouse_factory)
             settings = request["settings"]
+            path = SmoothPath(request["map"].notes, approach_ms=settings.approach_ms,
+                              arrival_lead_ms=settings.arrival_lead_ms) if settings.smooth_motion else None
             engine = PlaybackEngine(request["chart"].notes, self._emit_note,
                                     max_lateness_ms=settings.live_lateness_ms)
             engine.start(countdown_s=settings.countdown_s, offset_ms=settings.offset_ms,
@@ -556,6 +643,7 @@ class Application:
                 self.run_was_live = True
                 self.output_index = 0
                 self.engine = engine
+                self.motion_path = path
                 self.live_preparing = False
                 session = None  # Ownership transferred to the active run.
         except Exception as exc:
@@ -610,6 +698,8 @@ class Application:
                 self.control_generation += 1
                 self.preview_generation += 1
                 self.settings = updated
+                self.live_settings_dirty = False
+                self.edited_settings_snapshot = updated
             self._register_hotkeys()
             if self.hotkeys is not None and not self.hotkeys.last_error:
                 self.notice_var.set("Settings saved. For live playback, focus Rhythia and use the Start hotkey after manual synchronization.")
@@ -663,6 +753,8 @@ class Application:
                     self._start_locked(reference_ns=reference_ns, intent_generation=intent)
                 elif action == "probe":
                     self._probe_locked(intent_generation=intent)
+                elif action == "mark":
+                    self._mark_timing_locked(reference_ns)
             except (ValueError, RuntimeError, OSError) as exc:
                 self._cancel_locked(f"Input stopped: {exc}")
                 self.events.put(("error", str(exc)))
@@ -873,14 +965,30 @@ class Application:
                         focused = foreground_window()
                         if focused is None or (focused.handle, focused.pid) != (target.handle, target.pid):
                             self.engine.stop("Captured window lost focus; restart required.")
-                    self.engine.pump()
-                    if self.active_run_live and self.engine.snapshot().state not in ACTIVE:
+                    snapshot = self.engine.pump()
+                    if self.active_run_live and self.motion_path is not None and snapshot.state == PlaybackState.RUNNING:
+                        # Use the clock observation already checked by the note
+                        # scheduler, never a fresh time that could skip its
+                        # lateness checks or replay an older note after motion.
+                        map_ms = snapshot.elapsed_ms - self.settings.offset_ms * self.settings.speed
+                        point = self.motion_path.sample(map_ms, snapshot.emitted_count)
+                        if point is not None and (point.x, point.y) != self.last_motion_point:
+                            if self.stop_signal.is_set():
+                                raise RuntimeError("Playback cancelled before the next smooth movement.")
+                            self.live_session.emit(point)
+                            self.last_motion_point = (point.x, point.y)
+                    if self.active_run_live and snapshot.state not in ACTIVE:
                         self._close_live_locked()
             except Exception as exc:
                 with self.control_lock:
                     self._cancel_locked(f"Playback stopped after error: {exc}; restart the song and tool.")
                 self.events.put(("error", str(exc)))
-            self.closing.wait(0.002)
+            if self.active_run_live:
+                # Python 3.11+ uses a high-resolution Windows waitable timer
+                # for sleep. Event.wait's timed-lock path can be coarser.
+                time.sleep(0.002)
+            else:
+                self.closing.wait(0.002)
 
     def _refresh(self):
         if self.closing.is_set():
@@ -901,11 +1009,32 @@ class Application:
                 self.notice_var.set(value)
             elif kind == "notice":
                 self.notice_var.set(value)
+            elif kind == "learned_timing":
+                generation, intent, source, delay_s, form_revision = value
+                with self.control_lock:
+                    current = (generation == self.control_generation and intent == self._current_intent()
+                               and source is self.loaded_map and form_revision == self.form_revision)
+                if current:
+                    self.vars["countdown_s"].set(str(delay_s))
+                    if self.save_form():
+                        self.quick_setup_var.set(f"Learned start delay: {delay_s:.3f}s. Restart the song, click Ready to play, then press {self.settings.start_hotkey} as you start it again.")
+                        self.notice_var.set("Timing saved. Restart the song before playback; F9 was only a measurement and sent no mouse movement.")
         if self.hotkeys and self.hotkeys.last_error:
             with self.control_lock:
                 self._cancel_locked("Global hotkeys failed; input stopped. Resolve hotkey errors before restarting.")
             self.hotkey_var.set("Global hotkeys failed: " + self.hotkeys.last_error)
         snapshot = self.engine.snapshot()
+        if self.loaded_map is not None and self.pending_map is None:
+            first_s = self.loaded_map.notes[0].time_ms / 1000 / self.settings.speed
+            if self.active_run_live and snapshot.emitted_count < len(self.loaded_map.notes):
+                next_ms = self.loaded_map.notes[snapshot.emitted_count].time_ms
+                wait_s = snapshot.countdown_remaining_s + (next_ms / self.settings.speed + self.settings.offset_ms - snapshot.elapsed_ms / self.settings.speed) / 1000
+                self.next_note_var.set(f"Next note in {max(0, wait_s):.2f}s · {snapshot.emitted_count}/{len(self.loaded_map.notes)} notes")
+            else:
+                total = max(0, self.settings.countdown_s + first_s + self.settings.offset_ms / 1000)
+                self.next_note_var.set(f"Map first note: {first_s:.3f}s after timeline start. With saved settings: {total:.3f}s after {self.settings.start_hotkey}.")
+        else:
+            self.next_note_var.set("Choose a map to see its first note time.")
         output = "Windows mouse" if self.run_was_live else "Preview"
         self.status_var.set(f"{output} · {snapshot.state.value.capitalize()} · {snapshot.message}")
         self.timing_var.set(f"Map timeline {snapshot.elapsed_ms / 1000:.3f}s · countdown {snapshot.countdown_remaining_s:.2f}s · "

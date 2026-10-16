@@ -25,6 +25,7 @@ class QuickStartPanel(ttk.Frame):
         self.readiness_var = tk.StringVar(self)
         self.mode_hint_var = tk.StringVar(self)
         self.guide_var = tk.StringVar(self)
+        self.learning_hint_var = tk.StringVar(self)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self._wrap_labels = []
@@ -82,14 +83,31 @@ class QuickStartPanel(ttk.Frame):
         play_step.columnconfigure(0, weight=1)
         timing = ttk.Frame(play_step)
         timing.grid(row=0, column=0, sticky="w")
-        ttk.Label(timing, text="Countdown (s)").pack(side="left")
+        ttk.Label(timing, text="Start delay (s)").pack(side="left")
         ttk.Entry(timing, textvariable=app.vars["countdown_s"], width=7).pack(side="left", padx=(6, 18))
         ttk.Label(timing, text="Timing offset (ms)").pack(side="left")
         ttk.Entry(timing, textvariable=app.vars["offset_ms"], width=8).pack(side="left", padx=(6, 0))
+        options = ttk.Frame(play_step)
+        options.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(options, text="Speed (1 = normal)").pack(side="left")
+        self.speed_selector = ttk.Combobox(options, textvariable=app.vars["speed"], width=7,
+                                          values=("0.5", "0.75", "1", "1.25", "1.5", "2", "3", "4"))
+        self.speed_selector.pack(side="left", padx=(6, 18))
+        self.smooth_checkbutton = ttk.Checkbutton(options, text="Smooth cursor movement",
+                                                  variable=app.vars["smooth_motion"])
+        self.smooth_checkbutton.pack(side="left")
+        self.learn_button = ttk.Button(play_step, text="Learn timing…", command=app.learn_timing)
+        self.learn_button.grid(row=2, column=0, sticky="w", pady=(9, 0))
+        self._delay_help_var = tk.StringVar(self, value="Start delay waits before map time begins; "
+                                            "it is added to every note's map timestamp.")
+        self._wrapped_label(play_step, self._delay_help_var).grid(row=3, column=0, sticky="w", pady=(7, 0))
+        self._wrapped_label(play_step, self.learning_hint_var).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.next_note_label = self._wrapped_label(play_step, app.next_note_var)
+        self.next_note_label.grid(row=5, column=0, sticky="w", pady=(6, 0))
         self.ready_button = ttk.Button(play_step, text="Ready to play", command=app.quick_ready)
-        self.ready_button.grid(row=1, column=0, sticky="w", pady=(9, 0))
-        self._wrapped_label(play_step, self.readiness_var).grid(row=2, column=0, sticky="w", pady=(7, 0))
-        self._wrapped_label(play_step, self.guide_var).grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.ready_button.grid(row=6, column=0, sticky="w", pady=(9, 0))
+        self._wrapped_label(play_step, self.readiness_var).grid(row=7, column=0, sticky="w", pady=(7, 0))
+        self._wrapped_label(play_step, self.guide_var).grid(row=8, column=0, sticky="w", pady=(6, 0))
 
         stops = ttk.Frame(self)
         stops.grid(row=2, column=0, sticky="ew", pady=(8, 7))
@@ -204,23 +222,35 @@ class QuickStartPanel(ttk.Frame):
         start_key = app.settings.start_hotkey
         stop_key = app.settings.stop_hotkey
         try:
-            zero_countdown = float(app.vars["countdown_s"].get()) == 0
+            zero_delay = float(app.vars["countdown_s"].get()) == 0
         except ValueError:
-            zero_countdown = False
-        timeline_guide = (f"{start_key} at song timeline start." if zero_countdown else
-                          f"Press {start_key} one countdown before song timeline start.")
+            zero_delay = False
+        timeline_guide = (f"With start delay 0: {start_key} at song timeline start." if zero_delay else
+                          f"With a learned start delay: press {start_key} as you start the game. "
+                          "For a manual delay, press Start that many seconds before map time begins.")
         self.guide_var.set(f"Open Rhythia, select the same song. {timeline_guide} "
                            f"Tool does not start audio. {stop_key} stops; pausing requires restarting the song.")
+        learning = app.timing_learning != "off"
+        if app.timing_learning == "armed":
+            learning_text = f"Learning armed: focus Rhythia and press {start_key} as you start the game. No mouse input is sent."
+        elif app.timing_learning == "waiting":
+            learning_text = "Learning: press F9 when the first note SHOULD BE HIT, not when it first appears. No mouse input is sent."
+        else:
+            learning_text = (f"Learn timing: press {start_key} as you start the game, then F9 when the first note "
+                             "SHOULD BE HIT, not when it first appears. Learning sends no mouse input.")
+        self.learning_hint_var.set(learning_text)
 
         snapshot = app.engine.snapshot()
         active = snapshot.state in {PlaybackState.COUNTDOWN, PlaybackState.RUNNING, PlaybackState.PAUSED}
-        pending = app.calibration_pending or app.live_preparing
+        pending = app.calibration_pending or app.live_preparing or learning
         hotkeys_ready = (app.hotkeys is not None and not app.hotkeys.last_error and
                          app.hotkey_signature == tuple(app._hotkey_mapping(app.settings).items()))
         if app.live_preparing:
             message = "Preparing mouse playback. Stop cancels immediately."
         elif app.calibration_pending:
             message = "Finish the guided capture before getting ready."
+        elif learning:
+            message = "Finish learning timing before Ready to play. Stop cancels the lesson."
         elif active and app.active_run_live:
             message = f"Mouse playback is active. {stop_key} stops; Ctrl+Alt+F10 is the emergency stop."
         elif active:
@@ -241,14 +271,19 @@ class QuickStartPanel(ttk.Frame):
         can_ready = has_map and captured and mode in (ABSOLUTE_MODE, RELATIVE_MODE) and not pending and not active
         self.ready_button.state(["!disabled"] if can_ready else ["disabled"])
         self.setup_button.state(["disabled"] if pending else ["!disabled"])
+        can_learn = has_map and not app.calibration_pending and not app.live_preparing and not active
+        self.learn_button.state(["!disabled"] if can_learn else ["disabled"])
+        self.learn_button.configure(text="Restart timing lesson…" if learning else "Learn timing…")
 
     def _quick_choices_applied(self):
         """F6 uses committed settings, so edits must not look already applied."""
         app = self.app
         if app.vars["input_mode"].get() != app.settings.input_mode:
             return False
+        if app.vars["smooth_motion"].get() != app.settings.smooth_motion:
+            return False
         try:
             return all(float(app.vars[key].get()) == getattr(app.settings, key)
-                       for key in ("countdown_s", "offset_ms"))
+                       for key in ("countdown_s", "offset_ms", "speed"))
         except ValueError:
             return False
