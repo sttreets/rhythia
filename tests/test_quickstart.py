@@ -165,6 +165,53 @@ class QuickStartTests(unittest.TestCase):
         self.assertLess(self.panel.emergency_button.winfo_rooty() + self.panel.emergency_button.winfo_height(),
                         self.root.winfo_rooty() + self.root.winfo_height())
 
+    def test_high_dpi_short_window_keeps_stops_visible_and_last_step_scrolls_into_view(self):
+        self.panel.destroy()
+        self.root.tk.call("tk", "scaling", 2.0)
+        self.root.geometry("820x420")
+        self.panel = QuickStartPanel(self.root, self.app)
+        self.panel.pack(fill="both", expand=True)
+        self.select_map_and_window()
+        self.root.update()
+        canvas = self.panel.scroll_canvas
+        self.assertGreater(self.panel.scroll_content.winfo_height(), canvas.winfo_height())
+        self.assertLess(canvas.yview()[1], 1)
+        stop_top = self.panel.emergency_button.winfo_rooty()
+        stop_bottom = stop_top + self.panel.emergency_button.winfo_height()
+        self.assertLessEqual(stop_bottom, self.root.winfo_rooty() + self.root.winfo_height())
+        self.assertGreaterEqual(stop_top, self.root.winfo_rooty())
+
+        # Keyboard focus reveals the last action, without moving fixed stops.
+        self.panel.ready_button.focus_force()
+        self.root.update()
+        self.assertGreater(canvas.yview()[0], 0)
+        self.assertGreaterEqual(self.panel.ready_button.winfo_rooty(), canvas.winfo_rooty())
+        self.assertLessEqual(self.panel.ready_button.winfo_rooty() + self.panel.ready_button.winfo_height(),
+                             canvas.winfo_rooty() + canvas.winfo_height())
+        self.assertEqual(self.panel.emergency_button.winfo_rooty(), stop_top)
+        canvas.yview_moveto(1)
+        self.root.update()
+        self.assertAlmostEqual(canvas.yview()[1], 1, places=2)
+        self.assertEqual(self.panel.emergency_button.winfo_rooty(), stop_top)
+
+    def test_wheel_is_scoped_to_panel_and_does_not_scroll_selector(self):
+        self.root.geometry("820x350")
+        self.root.update()
+        canvas = self.panel.scroll_canvas
+        canvas.yview_moveto(0)
+        self.panel.map_button.event_generate("<MouseWheel>", delta=-120)
+        self.root.update()
+        self.assertGreater(canvas.yview()[0], 0)
+        canvas.yview_moveto(0)
+        self.panel.mode_selector.event_generate("<MouseWheel>", delta=-120)
+        self.root.update()
+        self.assertEqual(canvas.yview()[0], 0)
+        self.assertNotIn(self.panel._scroll_bindtag, self.panel.emergency_button.bindtags())
+        self.assertEqual(self.root.bind_all("<MouseWheel>"), "")
+        tag = self.panel._scroll_bindtag
+        self.panel.destroy()
+        self.assertEqual(self.root.bind_class(tag, "<MouseWheel>"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

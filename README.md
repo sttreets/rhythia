@@ -2,7 +2,7 @@
 
 Python/Tkinter map preview and **Windows mouse autoplay** for local SSPM v2 beatmaps. The target is Windows 10/11 x64 and Steam/CAPO Games Rhythia, with game version **0.2.0 reported by the user**. Mouse playback uses normal Windows `SendInput`; it does not modify the game or submit scores itself.
 
-**Live mouse playback is implemented, but compatibility with Steam Rhythia is experimental.** The map parser and input/timing logic have been tested with simulated input on Linux. Native Windows input, actual gameplay synchronization, normal score acceptance, and ranked RP have **not** been verified. The tool starts in **Preview** mode every time you open it.
+**Live mouse playback is implemented, but compatibility with Steam Rhythia is experimental.** The map parser and input/timing logic have been tested with simulated input on Linux and in Windows x64 CI. Native Windows input, actual gameplay synchronization, normal score acceptance, and ranked RP have **not** been verified. The tool starts in **Preview** mode every time you open it.
 
 ## Easiest download: Windows app
 
@@ -14,7 +14,7 @@ The Windows app is unsigned and experimental. Download it from this repository's
 
 ## Quick start
 
-The app opens on one page. Advanced settings are hidden until you need them.
+The app opens on one page. Advanced settings are hidden until you need them. Steps scroll on smaller screens or larger display scaling; Stop and Emergency Stop stay visible.
 
 1. **Choose your map:** select the `.sspm` for the song you will play.
 2. **Set up playfield:** open Rhythia in windowed or borderless mode with its playfield visible. Click **Set up playfield…**, switch to Rhythia during the three-second countdown, then click the **top-left** and **bottom-right outer corners of the whole 3 × 3 playfield** in the overlay. The game window and calibration are captured together. Your settings save automatically. Escape cancels.
@@ -135,7 +135,7 @@ The script creates/reuses `.venv`, installs `requirements-build.txt`, runs the t
 
 The result is **`dist\RhythiaTool.exe`**, a single GUI executable with Tkinter bundled, an `asInvoker` manifest, and Per-Monitor V2 DPI awareness. The recipient does not need Python. Test that exact executable on Windows before distributing it. It is unsigned; signing and SmartScreen reputation are separate release tasks. Administrator access is not required.
 
-**The Linux cloud environment cannot build a native Windows executable locally.** The repository's Windows download workflow runs on Windows x64, tests the source with fake input, builds with PyInstaller, smoke-tests the exact executable without sending input, and publishes the dedicated experimental `windows-build` prerelease with SHA-256 checksums and source commit. A successful published build establishes packaging, not game compatibility. For local builds, use Windows Python on Windows; this repository does not use Wine or claim a Linux build produces a Windows executable. See the [PyInstaller operating-mode documentation](https://github.com/pyinstaller/pyinstaller/blob/v6.16.0/doc/operating-mode.rst).
+**The Linux cloud environment cannot build a native Windows executable locally.** The repository's Windows download workflow runs on Windows x64, tests the source with fake input, builds with PyInstaller, smoke-tests the exact executable without sending input, and publishes the dedicated experimental `windows-build` prerelease with SHA-256 checksums and source commit. The initial Windows build passed all source-test steps, built the executable, and passed its success/error smoke checks before publication ([build log](https://github.com/sttreets/rhythia/actions/runs/38908559532)). These checks establish packaging; actual game compatibility is still unverified. For local builds, use Windows Python on Windows; this repository does not use Wine or claim a Linux build produces a Windows executable. See the [PyInstaller operating-mode documentation](https://github.com/pyinstaller/pyinstaller/blob/v6.16.0/doc/operating-mode.rst).
 
 ## Verification
 
@@ -152,7 +152,7 @@ python3 scripts/cloud_validate.py
 
 The cloud validation starts and cleans up an isolated Xvfb display when Linux is headless. Without a display, ordinary unittest discovery skips Tk tests; a skipped run is not equivalent to full validation.
 
-Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls and the live-mode prerequisites using fakes. The full cloud run passed **194 tests with no skips**, including guided setup, two-corner selection, emergency cancellation during setup, and release packaging with a fake API. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse (220 events each); no OS input was sent.
+Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls and the live-mode prerequisites using fakes. The full cloud run passed **197 tests with no skips**, including guided setup, two-corner selection, emergency cancellation during setup, and release packaging with a fake API. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse (220 events each); no OS input was sent.
 
 **Native Windows input and hotkeys, physical display/DPI behavior, Windows batch execution, Steam gameplay, actual song synchronization, and RP acceptance have not been tested in this Linux environment.** The separate Windows workflow records its source-test, packaging and executable smoke-check results in Build status. Simulated tests establish the tool's logic, not the game's acceptance of input or scores.
 

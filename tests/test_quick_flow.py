@@ -107,6 +107,18 @@ class QuickFlowTests(unittest.TestCase):
         self.assertIsNone(self.app.target)
         self.assertFalse(self.app.live_requested)
 
+    def test_stop_during_foreground_lookup_cannot_become_new_setup_intent(self):
+        callback = self.begin_setup()
+        def stop_during_lookup():
+            self.app.emergency_stop()
+            return self.target
+        with patch('rhythia_tool.app.foreground_window', side_effect=stop_during_lookup), patch('rhythia_tool.app.PlayfieldSelector') as selector:
+            callback()
+        selector.assert_not_called()
+        self.assertFalse(self.app.calibration_pending)
+        self.assertIsNone(self.app.quick_setup_intent)
+        self.assertFalse(self.app.settings_path.exists())
+
     def test_capture_of_tool_is_rejected_and_ready_explains_missing_map(self):
         callback = self.begin_setup()
         own = WindowInfo(12, os.getpid(), 'Tool', (0, 0, 1600, 1000), 96)

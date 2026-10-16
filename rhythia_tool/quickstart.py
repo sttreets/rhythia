@@ -26,12 +26,30 @@ class QuickStartPanel(ttk.Frame):
         self.mode_hint_var = tk.StringVar(self)
         self.guide_var = tk.StringVar(self)
         self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        self._wrap_labels = []
 
         ttk.Label(self, text="Get ready in three steps", font=("Segoe UI", 14, "bold")).grid(
             row=0, column=0, sticky="w", pady=(0, 8))
 
-        map_step = ttk.LabelFrame(self, text="1. Choose your map", padding=10)
-        map_step.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        scroll_area = ttk.Frame(self)
+        scroll_area.grid(row=1, column=0, sticky="nsew")
+        scroll_area.columnconfigure(0, weight=1)
+        scroll_area.rowconfigure(0, weight=1)
+        self.scroll_canvas = tk.Canvas(scroll_area, width=1, height=1, highlightthickness=0, borderwidth=0,
+                                       takefocus=True, background=self.winfo_toplevel().cget("background"))
+        self.scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(scroll_area, orient="vertical", command=self.scroll_canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.scroll_canvas.configure(yscrollcommand=scrollbar.set)
+        self.scroll_content = ttk.Frame(self.scroll_canvas)
+        self.scroll_content.columnconfigure(0, weight=1)
+        self._content_window = self.scroll_canvas.create_window((0, 0), window=self.scroll_content, anchor="nw")
+        self.scroll_canvas.bind("<Configure>", self._resize_content)
+        self.scroll_content.bind("<Configure>", self._update_scroll_region)
+
+        map_step = ttk.LabelFrame(self.scroll_content, text="1. Choose your map", padding=10)
+        map_step.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         map_step.columnconfigure(0, weight=1)
         map_buttons = ttk.Frame(map_step)
         map_buttons.grid(row=0, column=0, sticky="w")
@@ -39,18 +57,15 @@ class QuickStartPanel(ttk.Frame):
         self.map_button.pack(side="left")
         ttk.Button(map_buttons, text="Preview / map details", command=lambda: app.show_advanced("Playback")).pack(
             side="left", padx=(8, 0))
-        ttk.Label(map_step, textvariable=self.map_var, wraplength=730).grid(
-            row=1, column=0, sticky="w", pady=(7, 0))
+        self._wrapped_label(map_step, self.map_var).grid(row=1, column=0, sticky="w", pady=(7, 0))
 
-        setup_step = ttk.LabelFrame(self, text="2. Show the tool your play area", padding=10)
-        setup_step.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        setup_step = ttk.LabelFrame(self.scroll_content, text="2. Show the tool your play area", padding=10)
+        setup_step.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         setup_step.columnconfigure(0, weight=1)
         self.setup_button = ttk.Button(setup_step, text="Set up playfield…", command=app.quick_setup)
         self.setup_button.grid(row=0, column=0, sticky="w")
-        ttk.Label(setup_step, textvariable=app.quick_setup_var, wraplength=730).grid(
-            row=1, column=0, sticky="w", pady=(7, 0))
-        ttk.Label(setup_step, textvariable=self.target_var, wraplength=730).grid(
-            row=2, column=0, sticky="w", pady=(4, 0))
+        self._wrapped_label(setup_step, app.quick_setup_var).grid(row=1, column=0, sticky="w", pady=(7, 0))
+        self._wrapped_label(setup_step, self.target_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
         mode_row = ttk.Frame(setup_step)
         mode_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(mode_row, text="Mouse mode:").pack(side="left", padx=(0, 8))
@@ -60,11 +75,10 @@ class QuickStartPanel(ttk.Frame):
         self.mode_selector.pack(side="left")
         ttk.Button(mode_row, text="Relative mode settings…",
                    command=lambda: app.show_advanced("Mouse control")).pack(side="left", padx=(8, 0))
-        ttk.Label(setup_step, textvariable=self.mode_hint_var, wraplength=730).grid(
-            row=4, column=0, sticky="w", pady=(6, 0))
+        self._wrapped_label(setup_step, self.mode_hint_var).grid(row=4, column=0, sticky="w", pady=(6, 0))
 
-        play_step = ttk.LabelFrame(self, text="3. Get ready, then start from Rhythia", padding=10)
-        play_step.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        play_step = ttk.LabelFrame(self.scroll_content, text="3. Get ready, then start from Rhythia", padding=10)
+        play_step.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         play_step.columnconfigure(0, weight=1)
         timing = ttk.Frame(play_step)
         timing.grid(row=0, column=0, sticky="w")
@@ -74,20 +88,91 @@ class QuickStartPanel(ttk.Frame):
         ttk.Entry(timing, textvariable=app.vars["offset_ms"], width=8).pack(side="left", padx=(6, 0))
         self.ready_button = ttk.Button(play_step, text="Ready to play", command=app.quick_ready)
         self.ready_button.grid(row=1, column=0, sticky="w", pady=(9, 0))
-        ttk.Label(play_step, textvariable=self.readiness_var, wraplength=730).grid(
-            row=2, column=0, sticky="w", pady=(7, 0))
-        ttk.Label(play_step, textvariable=self.guide_var, wraplength=730).grid(
-            row=3, column=0, sticky="w", pady=(6, 0))
+        self._wrapped_label(play_step, self.readiness_var).grid(row=2, column=0, sticky="w", pady=(7, 0))
+        self._wrapped_label(play_step, self.guide_var).grid(row=3, column=0, sticky="w", pady=(6, 0))
 
         stops = ttk.Frame(self)
-        stops.grid(row=4, column=0, sticky="ew", pady=(2, 7))
+        stops.grid(row=2, column=0, sticky="ew", pady=(8, 7))
         self.stop_button = ttk.Button(stops, text="Stop", command=app.stop)
         self.stop_button.pack(side="left")
         self.emergency_button = ttk.Button(stops, text="EMERGENCY STOP · Ctrl+Alt+F10", command=app.emergency_stop)
         self.emergency_button.pack(side="left", padx=(8, 0))
-        ttk.Label(self, textvariable=app.status_var, wraplength=760).grid(row=5, column=0, sticky="w")
-        self.rowconfigure(6, weight=1)
+        self._status_label = ttk.Label(self, textvariable=app.status_var, wraplength=760)
+        self._status_label.grid(row=3, column=0, sticky="w")
+        self.bind("<Configure>", self._resize_status)
+        # A private bindtag reaches only this panel's widgets. It never adds a
+        # process-wide wheel binding or affects the advanced pages/combobox list.
+        self._scroll_bindtag = f"QuickStartScroll{id(self)}"
+        self.bind_class(self._scroll_bindtag, "<MouseWheel>", self._scroll_wheel)
+        self.bind_class(self._scroll_bindtag, "<Button-4>", self._scroll_wheel)
+        self.bind_class(self._scroll_bindtag, "<Button-5>", self._scroll_wheel)
+        self.bind_class(self._scroll_bindtag, "<Prior>", lambda event: self._scroll_page(event, -1))
+        self.bind_class(self._scroll_bindtag, "<Next>", lambda event: self._scroll_page(event, 1))
+        self.bind_class(self._scroll_bindtag, "<FocusIn>", self._scroll_focus)
+        self._add_scroll_bindtag(self.scroll_canvas)
+        self.bind("<Destroy>", self._clear_scroll_bindings)
         self.refresh()
+
+    def _wrapped_label(self, parent, variable):
+        label = ttk.Label(parent, textvariable=variable, wraplength=730)
+        self._wrap_labels.append(label)
+        return label
+
+    def _resize_content(self, event):
+        self.scroll_canvas.itemconfigure(self._content_window, width=event.width)
+        for label in self._wrap_labels:
+            label.configure(wraplength=max(120, event.width - 28))
+
+    def _resize_status(self, event):
+        if event.widget is self:
+            self._status_label.configure(wraplength=max(120, event.width - 24))
+
+    def _update_scroll_region(self, _event=None):
+        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+
+    def _add_scroll_bindtag(self, widget):
+        tags = widget.bindtags()
+        widget.bindtags((tags[0], self._scroll_bindtag, *tags[1:]))
+        for child in widget.winfo_children():
+            self._add_scroll_bindtag(child)
+
+    def _scroll_wheel(self, event):
+        if isinstance(event.widget, ttk.Combobox):
+            return None  # Keep the selector's own wheel behavior.
+        if getattr(event, "num", None) in (4, 5):
+            units = -3 if event.num == 4 else 3
+        else:
+            delta = getattr(event, "delta", 0)
+            if not delta:
+                return None
+            units = -max(1, abs(delta) // 120) if delta > 0 else max(1, abs(delta) // 120)
+        self.scroll_canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _scroll_page(self, event, direction):
+        if isinstance(event.widget, ttk.Combobox):
+            return None
+        self.scroll_canvas.yview_scroll(direction, "pages")
+        return "break"
+
+    def _scroll_focus(self, event):
+        """Tabbing to an off-screen control brings that control into view."""
+        if event.widget is self.scroll_canvas:
+            return
+        top = self.scroll_canvas.canvasy(0)
+        height = self.scroll_canvas.winfo_height()
+        widget_top = event.widget.winfo_rooty() - self.scroll_content.winfo_rooty()
+        widget_bottom = widget_top + event.widget.winfo_height()
+        content_height = max(1, self.scroll_content.winfo_height())
+        if widget_top < top:
+            self.scroll_canvas.yview_moveto(widget_top / content_height)
+        elif widget_bottom > top + height:
+            self.scroll_canvas.yview_moveto((widget_bottom - height) / content_height)
+
+    def _clear_scroll_bindings(self, event):
+        if event.widget is self:
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>", "<Prior>", "<Next>", "<FocusIn>"):
+                self.unbind_class(self._scroll_bindtag, sequence)
 
     def refresh(self):
         """Reflect current map, setup and scheduler state without side effects."""

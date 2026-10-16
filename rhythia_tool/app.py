@@ -76,7 +76,9 @@ class Application:
         self.capture_after_id = None
         self.root.title(f"Rhythia Tool {__version__}")
         self.root.minsize(760, 650)
-        self.root.geometry("860x800")
+        width = min(860, max(760, self.root.winfo_screenwidth() - 60))
+        height = min(800, max(650, self.root.winfo_screenheight() - 100))
+        self.root.geometry(f"{width}x{height}")
         self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
         self.vars = {name: (tk.BooleanVar(value=value) if type(value) is bool else tk.StringVar(value=str(value)))
                      for name, value in asdict(self.settings).items()}
@@ -298,11 +300,13 @@ class Application:
             self.vars["input_mode"].set(ABSOLUTE_MODE)
         self.quick_setup_var.set("Switch to Rhythia within 3 seconds. Then click the TOP-LEFT and BOTTOM-RIGHT outer corners of the whole playfield.")
 
-        def capture():
+        def capture(intent):
             target = foreground_window()
+            if intent != self._current_intent():
+                self.quick_setup_var.set("Setup cancelled by Stop. Try again when ready.")
+                return
             if target is None or target.pid == os.getpid():
                 raise ValueError("Switch to Rhythia during the countdown, then try Set up playfield again.")
-            intent = self._current_intent()
             self.quick_setup_intent = intent
 
             def cancelled():
@@ -802,7 +806,7 @@ class Application:
                             self.quick_setup_var.set("Setup cancelled by Stop. Try again when ready.")
                             return
                         self._cancel_locked("Calibration capture finished; restart required.")
-                    callback()
+                    callback(capture_intent)
                 except (OSError, ValueError, RuntimeError) as exc:
                     self._error(str(exc))
                 finally:
@@ -811,8 +815,10 @@ class Application:
         self.capture_after_id = self.root.after(3000, finish)
 
     def capture_corner(self, bottom_right):
-        def capture():
+        def capture(intent):
             x, y = cursor_position()
+            if intent != self._current_intent():
+                return
             if bottom_right:
                 left, top = int(self.vars["left"].get()), int(self.vars["top"].get())
                 if x <= left or y <= top:
@@ -826,8 +832,10 @@ class Application:
         self._delayed_capture(capture, "Move the desktop cursor to the chosen playfield corner within 3 seconds.")
 
     def capture_window(self):
-        def capture():
+        def capture(intent):
             target = foreground_window()
+            if intent != self._current_intent():
+                return
             if target is None:
                 raise ValueError("No foreground window found. Try capturing again.")
             if target.pid == os.getpid():
