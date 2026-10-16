@@ -1,16 +1,20 @@
-"""Edition-independent, simulated playback driven by an absolute monotonic clock.
+"""Edition-independent playback driven by an absolute monotonic clock.
 
 This module does not parse game maps, move the OS cursor, start audio, or submit
-scores. ``emit`` receives normalized demo points and must return promptly. A
+scores. ``emit`` is an injected output callback and must return promptly. A
 worker may call ``pump`` frequently; sleeping and thread creation belong to the
 caller. Deadlines never depend on the previous pump or event, so polling jitter
 does not accumulate as drift.
 
-``start`` sets the simulated song origin to ``now + countdown_s``. A note's
-deadline is ``origin + offset_ms + note.time_ms / speed``. Offset is measured in
-wall-clock milliseconds; a positive value emits later. A negative offset may
-emit notes during the final countdown. ``elapsed_ms`` is simulated song position,
-scaled by speed, independent of offset, and clamped to zero before the origin.
+``start`` sets the song origin to ``reference_ns + countdown_s`` when an explicit
+monotonic reference is supplied, otherwise ``now + countdown_s``. Callers can
+capture that reference when a Start hotkey arrives, before preparing a session.
+Preparation time then counts toward the timeline instead of silently delaying
+it; the usual lateness cutoff stops an already-late first note before output.
+A note's deadline is ``origin + offset_ms + note.time_ms / speed``. Offset is
+measured in wall-clock milliseconds; a positive value emits later. A negative
+offset may emit notes during the final countdown. ``elapsed_ms`` is song
+position, scaled by speed, independent of offset, and zero before the origin.
 
 Pause freezes this simulated timeline. Resume moves all remaining deadlines by
 the paused duration. This does not pause a real game or song and establishes no
@@ -43,7 +47,7 @@ def _number(value: object, name: str) -> float:
 
 @dataclass(frozen=True, slots=True)
 class Note:
-    """One synthetic point; coordinates are normalized to the preview rectangle."""
+    """One timed point; coordinates are normalized to the preview rectangle."""
 
     time_ms: float
     x: float
@@ -79,7 +83,7 @@ class PlaybackSnapshot:
 
 
 class PlaybackEngine:
-    """Thread-safe state machine for a short-lived, simulation-only event sink."""
+    """Thread-safe state machine for a short-lived injected event sink."""
 
     _ACTIVE = frozenset((PlaybackState.COUNTDOWN, PlaybackState.RUNNING))
 
@@ -108,7 +112,7 @@ class PlaybackEngine:
         self._clock_ns = clock_ns
         self._lock = threading.RLock()
         self._state = PlaybackState.IDLE
-        self._message = "Ready (simulation only)."
+        self._message = "Ready."
         self._origin_ns: int | None = None
         self._paused_at_ns: int | None = None
         self._terminal_at_ns: int | None = None
@@ -136,7 +140,7 @@ class PlaybackEngine:
         if self._last_active_ns is not None and now < self._last_active_ns:
             self._finish(
                 PlaybackState.ERROR,
-                "Monotonic clock moved backwards; restart the simulation.",
+                "Monotonic clock moved backwards; restart playback.",
                 self._last_active_ns,
             )
             return None
@@ -154,8 +158,15 @@ class PlaybackEngine:
         countdown_s: float = 3.0,
         offset_ms: float = 0.0,
         speed: float = 1.0,
+        *,
+        reference_ns: int | None = None,
     ) -> PlaybackSnapshot:
-        """Start fresh, resetting all counters and replacing any previous run."""
+        """Start fresh, optionally anchored to an earlier Start-hotkey instant.
+
+        ``reference_ns`` uses the same monotonic clock as ``clock_ns``. It must
+        be an integer no later than the actual start-time observation and no
+        more than one hour earlier. Invalid arguments leave any run unchanged.
+        """
         countdown = _number(countdown_s, "countdown_s")
         offset = _number(offset_ms, "offset_ms")
         rate = _number(speed, "speed")
@@ -165,6 +176,10 @@ class PlaybackEngine:
             raise ValueError("offset_ms must be between -5000 and 5000 milliseconds.")
         if not 0.1 <= rate <= 4.0:
             raise ValueError("speed must be between 0.1 and 4.0.")
+        if reference_ns is not None and (
+            isinstance(reference_ns, bool) or not isinstance(reference_ns, int)
+        ):
+            raise ValueError("reference_ns must be integer monotonic nanoseconds.")
         try:
             relative_deadlines = tuple(
                 round(note.time_ms * (1_000_000 / rate)) for note in self._notes
@@ -173,7 +188,10 @@ class PlaybackEngine:
             raise ValueError("Note timestamps are too large for playback.") from exc
         with self._lock:
             now = self._read_clock()
-            self._origin_ns = now + round(countdown * 1_000_000_000)
+            reference = now if reference_ns is None else reference_ns
+            if not 0 <= now - reference <= 3_600_000_000_000:
+                raise ValueError("reference_ns must not be in the future or more than one hour old.")
+            self._origin_ns = reference + round(countdown * 1_000_000_000)
             self._offset_ns = round(offset * 1_000_000)
             self._speed = rate
             self._deadlines = tuple(
@@ -185,11 +203,11 @@ class PlaybackEngine:
             self._index = 0
             self._max_lateness_ns = 0
             self._generation += 1
-            self._state = PlaybackState.COUNTDOWN if countdown > 0 else PlaybackState.RUNNING
+            self._state = PlaybackState.COUNTDOWN if now < self._origin_ns else PlaybackState.RUNNING
             self._message = (
-                "Countdown (simulation only)."
-                if countdown > 0
-                else "Running (simulation only)."
+                "Countdown."
+                if self._state == PlaybackState.COUNTDOWN
+                else "Running."
             )
             return self._snapshot(now)
 
@@ -207,9 +225,9 @@ class PlaybackEngine:
                 else PlaybackState.RUNNING
             )
             self._message = (
-                "Countdown (simulation only)."
+                "Countdown."
                 if self._state == PlaybackState.COUNTDOWN
-                else "Running (simulation only)."
+                else "Running."
             )
             generation = self._generation
             while self._state in self._ACTIVE and self._index < len(self._notes):
@@ -221,8 +239,8 @@ class PlaybackEngine:
                 if lateness > self._lateness_limit_ns:
                     self._finish(
                         PlaybackState.STOPPED,
-                        "Synchronization lost: a simulated point is "
-                        f"{lateness / 1_000_000:.1f} ms late. Restart the simulation.",
+                        "Synchronization lost: a point is "
+                        f"{lateness / 1_000_000:.1f} ms late. Restart playback.",
                         now,
                     )
                     break
@@ -231,7 +249,7 @@ class PlaybackEngine:
                     self._emit(note)
                 except Exception as exc:
                     if generation == self._generation and self._state in self._ACTIVE:
-                        self._finish(PlaybackState.ERROR, f"Simulation output failed: {exc}", now)
+                        self._finish(PlaybackState.ERROR, f"Output failed: {exc}", now)
                     break
                 # A reentrant callback can explicitly stop or replace this run.
                 if generation != self._generation:
@@ -244,7 +262,7 @@ class PlaybackEngine:
                     break
                 now = observed
             if self._state in self._ACTIVE and self._index == len(self._notes):
-                self._finish(PlaybackState.COMPLETED, "Simulation complete.", now)
+                self._finish(PlaybackState.COMPLETED, "Playback complete.", now)
             return self._snapshot(now)
 
     def pause(self) -> PlaybackSnapshot:
@@ -255,7 +273,7 @@ class PlaybackEngine:
                 if now is not None:
                     self._paused_at_ns = now
                     self._state = PlaybackState.PAUSED
-                    self._message = "Simulation paused; no real game or song was paused."
+                    self._message = "Timeline paused; no game or song was paused."
             return self.snapshot()
 
     def resume(self) -> PlaybackSnapshot:
@@ -274,7 +292,7 @@ class PlaybackEngine:
                         if now < self._origin_ns
                         else PlaybackState.RUNNING
                     )
-                    self._message = "Simulation resumed; real song synchronization is unverified."
+                    self._message = "Timeline resumed."
             return self.snapshot()
 
     def stop(self, reason: str = "Stopped") -> PlaybackSnapshot:

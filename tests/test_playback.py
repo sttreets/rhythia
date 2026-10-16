@@ -73,6 +73,80 @@ class PlaybackTests(unittest.TestCase):
         self.assertEqual(snapshot.elapsed_ms, 0)
         self.assertEqual(snapshot.emitted_count, 1)
 
+    def test_start_reference_includes_preparation_time_in_note_deadlines(self):
+        self.clock.now_ns = 100_000_000
+        engine = self.engine((150,), max_lateness_ms=50)
+        snapshot = engine.start(countdown_s=0, reference_ns=0)
+        self.assertEqual(snapshot.state, PlaybackState.RUNNING)
+        self.assertEqual(snapshot.elapsed_ms, 100)
+        self.assertEqual(engine.pump().emitted_count, 0)
+        self.clock.advance_ms(49)
+        self.assertEqual(engine.pump().emitted_count, 0)
+        self.clock.advance_ms(1)
+        snapshot = engine.pump()
+        self.assertEqual(snapshot.state, PlaybackState.COMPLETED)
+        self.assertEqual(snapshot.elapsed_ms, 150)
+        self.assertEqual(snapshot.max_lateness_ms, 0)
+
+    def test_start_reference_stops_before_input_if_preparation_lost_sync(self):
+        self.clock.now_ns = 100_000_000
+        engine = self.engine((0, 150), max_lateness_ms=50)
+        engine.start(countdown_s=0, reference_ns=0)
+        snapshot = engine.pump()
+        self.assertEqual(snapshot.state, PlaybackState.STOPPED)
+        self.assertEqual(snapshot.max_lateness_ms, 100)
+        self.assertEqual(snapshot.emitted_count, 0)
+        self.assertEqual(self.emitted, [])
+        self.assertIn("Synchronization lost", snapshot.message)
+
+    def test_start_reference_countdown_offset_and_speed_share_one_origin(self):
+        reference = self.clock.now_ns
+        self.clock.advance_ms(100)
+        engine = self.engine((100,))
+        snapshot = engine.start(countdown_s=0.25, offset_ms=50, speed=2, reference_ns=reference)
+        self.assertEqual(snapshot.state, PlaybackState.COUNTDOWN)
+        self.assertAlmostEqual(snapshot.countdown_remaining_s, 0.15)
+        self.clock.advance_ms(249)
+        self.assertEqual(engine.pump().emitted_count, 0)
+        self.clock.advance_ms(1)
+        snapshot = engine.pump()
+        self.assertEqual(snapshot.state, PlaybackState.COMPLETED)
+        self.assertEqual(snapshot.elapsed_ms, 200)
+        self.assertEqual(snapshot.max_lateness_ms, 0)
+
+    def test_start_reference_uses_actual_start_observation_for_clock_regression(self):
+        self.clock.now_ns = 100_000_000
+        engine = self.engine((150,))
+        engine.start(countdown_s=0, reference_ns=0)
+        self.clock.advance_ms(-1)
+        snapshot = engine.pump()
+        self.assertEqual(snapshot.state, PlaybackState.ERROR)
+        self.assertIn("backwards", snapshot.message)
+        self.assertEqual(self.emitted, [])
+
+    def test_invalid_start_reference_leaves_existing_run_unchanged(self):
+        engine = self.engine()
+        original = engine.start(countdown_s=0)
+        for reference in (
+            True, False, 0.0, "0", math.nan, math.inf,
+            self.clock.now_ns + 1,
+            self.clock.now_ns - 3_600_000_000_001,
+            -(10 ** 1000), 10 ** 1000,
+        ):
+            with self.subTest(reference=str(reference)[:80]):
+                with self.assertRaisesRegex(ValueError, "reference_ns"):
+                    engine.start(reference_ns=reference)
+                self.assertEqual(engine.snapshot(), original)
+        self.assertEqual(engine.pump().emitted_count, 1)
+
+    def test_reference_exactly_one_hour_old_is_supported(self):
+        reference = self.clock.now_ns - 3_600_000_000_000
+        engine = self.engine((1,))
+        snapshot = engine.start(countdown_s=3600, reference_ns=reference)
+        self.assertEqual(snapshot.state, PlaybackState.RUNNING)
+        self.assertEqual(snapshot.elapsed_ms, 0)
+        self.assertEqual(engine.pump().emitted_count, 0)
+
     def test_absolute_deadlines_do_not_accumulate_polling_drift(self):
         engine = self.engine((0, 100, 200, 300))
         engine.start(countdown_s=0)

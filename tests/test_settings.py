@@ -65,6 +65,23 @@ class SettingsTests(unittest.TestCase):
                         load_settings(path)
                     self.assertEqual(path.read_text(), text)
 
+    def test_live_calibration_round_trip_and_legacy_mode_requires_reselection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            expected = replace(Settings(), input_mode="Relative calibrated", counts_per_unit_x=315.5,
+                               anchor_x=0.5, invert_y=True, live_lateness_ms=25)
+            save_settings(path, expected)
+            self.assertEqual(load_settings(path), expected)
+            path.write_text(json.dumps({"input_mode": "Relative/raw (unverified)"}))
+            self.assertEqual(load_settings(path).input_mode, "Unverified")
+
+    def test_live_settings_reject_nonfinite_calibration_and_invalid_flags(self):
+        for values in ({"counts_per_unit_x": 0}, {"anchor_x": 3},
+                       {"counts_per_unit_y": float("inf")}, {"live_lateness_ms": 0},
+                       {"live_lateness_ms": 251}, {"invert_x": "False"}, {"invert_y": 1}):
+            with self.subTest(values=values), self.assertRaises(SettingsError):
+                replace(Settings(), **values).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

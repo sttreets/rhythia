@@ -1,4 +1,4 @@
-"""SSPM preview interface. Steam live integration remains disabled."""
+"""SSPM preview and manually calibrated Windows mouse playback interface."""
 
 from __future__ import annotations
 
@@ -10,15 +10,18 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from .chart import display_text, preview_sspm
 from .demo import load_demo
+from .live import ABSOLUTE_MODE, RELATIVE_MODE, LiveCalibration, LiveSession
+from .mouse import WindowsMouse
 from .playback import PlaybackEngine, PlaybackState
 from .settings import Settings, SettingsError, default_settings_path, load_settings, save_settings
-from .sspm import MapFormatError, load_sspm
+from .sspm import MapFormatError, MapNote, load_sspm
 from .windows import GlobalHotkeys, IS_WINDOWS, cursor_position, foreground_window, set_dpi_awareness
 
 
@@ -26,7 +29,7 @@ ACTIVE = {PlaybackState.COUNTDOWN, PlaybackState.RUNNING, PlaybackState.PAUSED}
 
 
 class Application:
-    def __init__(self, root: tk.Tk, settings_path: Path):
+    def __init__(self, root: tk.Tk, settings_path: Path, *, mouse_factory=WindowsMouse):
         self.root = root
         self.settings_path = settings_path
         self.settings_warning = ""
@@ -40,9 +43,22 @@ class Application:
         self.target_lock = threading.Lock()
         self.control_lock = threading.RLock()
         self.control_generation = 0
+        self.intent_lock = threading.Lock()
+        self.cancel_generation = 0
+        self.stop_signal = threading.Event()
         self.preview_generation = 0
         self.target = None
         self.guard_enabled = False
+        self.mouse_factory = mouse_factory
+        self.live_requested = False
+        self.live_session = None
+        self.pending_live_start = None
+        self.live_preparing = False
+        self.active_run_live = False
+        self.run_was_live = False
+        self.output_index = 0
+        self.probe_axis = "X"
+        self.calibration_pending = False
         self.hotkeys = None
         self.hotkey_signature = None
         self.pending_map: Path | None = None
@@ -50,16 +66,19 @@ class Application:
         self.chart = self.demo
         self.loaded_map = None
         self.source_path = None
-        self.engine = PlaybackEngine(self.demo.notes,
-                                     lambda note: self.events.put(("note", (self.preview_generation, note))))
+        self.engine = PlaybackEngine(self.demo.notes, self._emit_note)
         self.last_note = None
         self.after_id = None
         self.capture_after_id = None
-        self.root.title(f"Rhythia Tool {__version__} · Simulation")
+        self.root.title(f"Rhythia Tool {__version__}")
         self.root.minsize(760, 650)
         self.root.geometry("860x800")
         self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
-        self.vars = {name: tk.StringVar(value=str(value)) for name, value in asdict(self.settings).items()}
+        self.vars = {name: (tk.BooleanVar(value=value) if type(value) is bool else tk.StringVar(value=str(value)))
+                     for name, value in asdict(self.settings).items()}
+        self.output_mode_var = tk.StringVar(value="Preview")
+        self.probe_axis_var = tk.StringVar(value="X")
+        self.banner_var = tk.StringVar(value="PREVIEW MODE - no desktop input. Steam compatibility and RP remain unverified.")
         self.source_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready for synthetic preview.")
         self.timing_var = tk.StringVar()
@@ -79,23 +98,31 @@ class Application:
         outer = ttk.Frame(self.root, padding=14)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text="Rhythia Tool", font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        ttk.Label(outer, text="PREVIEW ONLY · Steam/CAPO live compatibility unverified · Desktop cursor is never moved",
+        ttk.Label(outer, textvariable=self.banner_var,
                   foreground="#a14212", wraplength=800).pack(anchor="w", pady=(2, 10))
         tabs = ttk.Notebook(outer)
         tabs.pack(fill="both", expand=True)
         playback = ttk.Frame(tabs, padding=12)
         calibration = ttk.Frame(tabs, padding=12)
         settings_tab = ttk.Frame(tabs, padding=12)
+        mouse_tab = ttk.Frame(tabs, padding=12)
         help_tab = ttk.Frame(tabs, padding=12)
-        tabs.add(playback, text="Playback preview")
+        tabs.add(playback, text="Playback")
         tabs.add(calibration, text="Calibration")
         tabs.add(settings_tab, text="Timing & hotkeys")
-        tabs.add(help_tab, text="Steam compatibility")
+        tabs.add(mouse_tab, text="Mouse control")
+        tabs.add(help_tab, text="Start guide")
 
         row = ttk.Frame(playback)
         row.pack(fill="x")
         ttk.Button(row, text="Select local map…", command=self.pick_map).pack(side="left")
         ttk.Button(row, text="Load synthetic demo", command=self.load_synthetic).pack(side="left", padx=8)
+        mode_row = ttk.Frame(playback)
+        mode_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(mode_row, text="Output:").pack(side="left", padx=(0, 8))
+        for mode in ("Preview", "Windows mouse"):
+            ttk.Radiobutton(mode_row, text=mode, value=mode, variable=self.output_mode_var,
+                            command=self.set_output_mode).pack(side="left", padx=(0, 14))
         ttk.Label(playback, textvariable=self.source_var, wraplength=760).pack(anchor="w", pady=8)
         self.canvas = tk.Canvas(playback, width=480, height=310, background="#172032", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=(0, 8))
@@ -105,14 +132,15 @@ class Application:
         controls.pack(fill="x", pady=10)
         self.start_button = ttk.Button(controls, text="Start / Resume preview", command=self.start)
         self.start_button.pack(side="left")
-        ttk.Button(controls, text="Pause preview", command=self.pause).pack(side="left", padx=6)
+        self.pause_button = ttk.Button(controls, text="Pause preview", command=self.pause)
+        self.pause_button.pack(side="left", padx=6)
         ttk.Button(controls, text="Stop", command=self.stop).pack(side="left")
         ttk.Button(controls, text="EMERGENCY STOP (Ctrl+Alt+F10)", command=self.emergency_stop).pack(side="right")
-        ttk.Label(playback, text="Pause freezes only this simulation. It does not pause game audio.\n"
-                  "A focus change, emergency stop, or missed deadline requires a fresh start.",
+        ttk.Label(playback, text="Live: switch to Rhythia and use the Start hotkey at your chosen song origin.\n"
+                  "Live pause stops input: restart the song and tool. Preview pause can resume.",
                   wraplength=760).pack(anchor="w")
 
-        ttk.Label(calibration, text="Physical desktop pixels (preview mapping only)",
+        ttk.Label(calibration, text="Outer edges of the 3 by 3 playfield in physical desktop pixels",
                   font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
         fields = [("left", "Playfield left X"), ("top", "Playfield top Y"),
                   ("width", "Playfield width"), ("height", "Playfield height"),
@@ -125,14 +153,14 @@ class Application:
         capture.grid(row=8, column=0, columnspan=4, sticky="w", pady=10)
         ttk.Button(capture, text="Capture top-left in 3s", command=lambda: self.capture_corner(False)).pack(side="left")
         ttk.Button(capture, text="Capture bottom-right in 3s", command=lambda: self.capture_corner(True)).pack(side="left", padx=6)
-        ttk.Label(calibration, text="Cursor input mode (recorded preference; not verified)").grid(row=9, column=0, sticky="w", pady=6)
+        ttk.Label(calibration, text="Cursor input mode (verify using the calibration probe)").grid(row=9, column=0, sticky="w", pady=6)
         ttk.Combobox(calibration, state="readonly", textvariable=self.vars["input_mode"], width=30,
-                     values=("Unverified", "Absolute desktop (unverified)", "Relative/raw (unverified)")).grid(row=9, column=1, sticky="w")
+                     values=("Unverified", ABSOLUTE_MODE, RELATIVE_MODE)).grid(row=9, column=1, sticky="w")
         ttk.Button(calibration, text="Capture foreground window in 3s", command=self.capture_window).grid(row=10, column=0, columnspan=2, sticky="w", pady=10)
         ttk.Label(calibration, textvariable=self.window_var, wraplength=700).grid(row=11, column=0, columnspan=3, sticky="w")
-        ttk.Checkbutton(calibration, text="Stop preview when captured window loses focus", variable=self.guard_var,
+        ttk.Checkbutton(calibration, text="Preview focus guard (live mode always checks focus)", variable=self.guard_var,
                         command=self._set_guard).grid(row=12, column=0, columnspan=3, sticky="w", pady=10)
-        ttk.Label(calibration, text="Window capture does not infer the game's playfield. Calibrate its inner boundaries manually.\n"
+        ttk.Label(calibration, text="Window capture does not infer the playfield. Capture the outer edges of all three rows/columns.\n"
                   "Negative X/Y values are valid for monitors to the left/above the primary display.\n"
                   "Use the global start hotkey with the captured window focused when the focus guard is enabled.",
                   wraplength=700).grid(row=13, column=0, columnspan=3, sticky="w")
@@ -140,6 +168,7 @@ class Application:
         timing_fields = [("countdown_s", "Countdown (seconds, 0–3600)"),
                          ("offset_ms", "Timing offset (ms, −5000 to +5000)"),
                          ("speed", "Playback speed (0.1–4×)"),
+                         ("live_lateness_ms", "Live lateness cutoff (ms, 1-250)"),
                          ("start_hotkey", "Start / Resume hotkey"),
                          ("pause_hotkey", "Pause hotkey"), ("stop_hotkey", "Stop hotkey")]
         for row_number, (key, label) in enumerate(timing_fields):
@@ -149,39 +178,70 @@ class Application:
                   "Positive offset emits later; negative offset may emit during countdown.\n"
                   "Speed scales note timestamps; offset stays in wall-clock milliseconds.\n"
                   "Save timing/calibration changes before starting via global hotkeys.\n"
-                  "Saving settings stops the current preview; restart it to apply changes.",
-                  wraplength=700).grid(row=6, column=0, columnspan=2, sticky="w", pady=16)
-        ttk.Label(settings_tab, textvariable=self.hotkey_var, wraplength=700).grid(row=7, column=0, columnspan=2, sticky="w")
-        ttk.Button(settings_tab, text="Save settings", command=self.save_form).grid(row=8, column=0, sticky="w", pady=14)
-        ttk.Label(settings_tab, text=f"Settings: {self.settings_path}", wraplength=700).grid(row=9, column=0, columnspan=2, sticky="w")
+                  "Saving settings stops input; restart the song and tool after changing timing.\n"
+                  "Calibration probe: Ctrl+Alt+F9 (fixed). It moves the cursor once.",
+                  wraplength=700).grid(row=7, column=0, columnspan=2, sticky="w", pady=16)
+        ttk.Label(settings_tab, textvariable=self.hotkey_var, wraplength=700).grid(row=8, column=0, columnspan=2, sticky="w")
+        ttk.Button(settings_tab, text="Save settings", command=self.save_form).grid(row=9, column=0, sticky="w", pady=14)
+        ttk.Label(settings_tab, text=f"Settings: {self.settings_path}", wraplength=700).grid(row=10, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(mouse_tab, text="Relative-mode calibration", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        relative_fields = [("counts_per_unit_x", "Mouse counts per grid unit X"),
+                           ("counts_per_unit_y", "Mouse counts per grid unit Y"),
+                           ("anchor_x", "Starting cursor map X (center = 1)"),
+                           ("anchor_y", "Starting cursor map Y (center = 1)")]
+        for row_number, (key, label) in enumerate(relative_fields, 1):
+            ttk.Label(mouse_tab, text=label).grid(row=row_number, column=0, sticky="w", pady=6)
+            ttk.Entry(mouse_tab, textvariable=self.vars[key], width=18).grid(row=row_number, column=1, sticky="w", padx=12)
+        ttk.Checkbutton(mouse_tab, text="Invert horizontal movement", variable=self.vars["invert_x"]).grid(row=5, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Checkbutton(mouse_tab, text="Invert vertical movement", variable=self.vars["invert_y"]).grid(row=6, column=0, columnspan=2, sticky="w", pady=5)
+        probes = ttk.Frame(mouse_tab)
+        probes.grid(row=7, column=0, columnspan=2, sticky="w", pady=12)
+        ttk.Label(probes, text="Relative probe axis:").pack(side="left")
+        for axis in ("X", "Y"):
+            ttk.Radiobutton(probes, text=axis, value=axis, variable=self.probe_axis_var,
+                            command=self.set_probe_axis).pack(side="left", padx=8)
+        ttk.Label(mouse_tab, text="1. Select the cursor mode in Calibration and save settings.\n"
+                  "2. Capture the Rhythia window, select Windows mouse output, then focus Rhythia.\n"
+                  "3. Press Ctrl+Alt+F9 for one calibration movement. It never starts a song.\n"
+                  "Absolute mode: the probe targets the center of your calibrated playfield.\n"
+                  "Relative mode: manually put the game cursor at your anchor first; the probe moves\n"
+                  "one grid unit along the chosen axis. Adjust counts until it moves exactly one cell.\n"
+                  "Reset the game cursor to the configured anchor BEFORE EACH relative start or probe.\n"
+                  "Windows pointer speed/acceleration and game sensitivity affect relative calibration.\n"
+                  "This tool does not auto-home the game cursor or detect song playback.\n"
+                  "Synthetic demo can only preview. Live runs require a loaded SSPM map.\n"
+                  "Steam input compatibility and score/RP acceptance are still unverified.",
+                  wraplength=740).grid(row=8, column=0, columnspan=2, sticky="w", pady=8)
 
         help_text = (
-            "Target: Steam/CAPO Games Rhythia. Reported game version: 0.2.0. "
-            "SSPM v2 parsing is supported against the public SSPM specification and supplied sample. "
-            "This does not verify Steam gameplay/input/scoring compatibility.\n\n"
-            "No map folder is needed: select a local .sspm file directly. The tool reads its notes and metadata "
-            "for a silent preview. Embedded audio and images are not decoded or executed. "
-            "The preview preserves quantum/off-grid positions and fits them into its own viewport.\n\n"
-            "Steam live input, actual song synchronization, and RP acceptance remain unverified. "
-            "Live cursor output is disabled until authoritative Steam-specific evidence is available. "
-            "The open-source Rhythia/Client is a different project; its input and eligibility rules "
-            "are not evidence for Steam/CAPO.\n\n"
-            "To identify the exact installed Steam build, check the game title/About/Settings, and "
-            "Steam Properties for a Build ID when available.\n\n"
-            "2. If installed through Steam: Library → Rhythia → gear → Properties → Installed Files → Browse. "
-            "For a desktop shortcut: right-click → Properties → Open File Location. "
-            "Record the download/store URL and the executable's exact name. EXE Properties → Details may show a version.\n\n"
-            "3. Use the game's own map import/export or open-map-folder command if one exists. Otherwise inspect "
-            "only that installation's maps/songs/user-data folders. Enable View → Show → File name extensions in Explorer. "
-            "There is no verified universal map folder.\n\n"
-            "4. Send the edition/version or store URL and ONE known playable map. If it is a directory or archive "
-            "with metadata/audio, keep its structure and names. Do not send a whole game profile, credentials, or personal files.\n\n"
-            "The open-source Rhythia/Client and Steam/CAPO Games edition are separate projects. File extensions "
-            "such as .sspm/.phxm/.txt/.rhm are candidates for the open-source client only.\n\n"
-            "The parser supports SSPM v2 notes. Other formats and marker types produce clear errors. "
-            "No live mouse output, audio synchronization, score submission, or RP acceptance is claimed.\n\n"
-            "For now: load the synthetic demo, set countdown/offset/speed, and start the preview. Only the dot in this "
-            "window moves. The displayed pixel positions let you inspect calibration without controlling the mouse."
+            "Target: Steam/CAPO Games Rhythia, reported game version 0.2.0. "
+            "Normal Windows mouse playback is implemented, but this machine has not tested it in Windows or Rhythia. "
+            "Steam input compatibility and score/RP acceptance remain unverified.\n\n"
+            "1. Select your local SSPM v2 map. Use Preview first to check its notes and timing. "
+            "No game map folder is needed. Embedded audio is not played by this tool.\n\n"
+            "2. In Calibration, capture the OUTER edges of the entire 3 by 3 playfield in physical pixels. "
+            "Choose Absolute screen for a screen-position cursor, or Relative calibrated for a captured cursor. "
+            "Use Mouse control to set relative counts, starting anchor, and inversion. Save settings.\n\n"
+            "3. Capture foreground window in 3s, then switch to Rhythia before capture finishes. "
+            "Live input requires that same window to stay focused, unmoved, and at the same DPI.\n\n"
+            "4. Select Windows mouse output. Focus Rhythia and use Ctrl+Alt+F9 to test calibration. "
+            "Absolute mode targets the calibrated center. Relative mode moves one grid unit along the chosen axis; "
+            "manually reset the game cursor to the configured anchor before every probe and run. "
+            "Adjust counts until one probe matches one grid cell.\n\n"
+            "5. Set countdown to the delay from your Start hotkey to song timeline zero. "
+            "Match playback speed to the game. Positive offset delays notes; negative offset advances them. "
+            "Start the game/song yourself and press the Start hotkey (default F6) at your chosen reference point. "
+            "The tool neither detects nor starts song playback. Check synchronization on a short run first.\n\n"
+            "6. F8 stops; Ctrl+Alt+F10 is emergency stop. Live pause (F7) stops input and loses song sync: "
+            "restart the song, reset the relative anchor, and start a fresh run. Only Preview can pause/resume.\n\n"
+            "The live Apply settings button prepares the run; F6 from the focused game begins it. "
+            "Capture the window each launch. Output always defaults to Preview. Focus, window geometry/DPI, "
+            "input errors, or excessive scheduling lateness stop live output. No clicking, keyboard injection, "
+            "game memory access, or alternative score submission is used.\n\n"
+            "The SSPM specification establishes map timestamps and coordinates. It does not establish Steam's "
+            "cursor sensitivity, accepted input mode, song origin, or ranked-score rules. The separate open-source "
+            "Rhythia/Client is not evidence for those Steam behaviors. See README for test evidence and limitations."
         )
         text = tk.Text(help_tab, wrap="word", height=24, font=("Segoe UI", 10), relief="flat")
         scroll = ttk.Scrollbar(help_tab, orient="vertical", command=text.yview)
@@ -197,7 +257,8 @@ class Application:
 
     def _form_settings(self) -> Settings:
         values = {name: variable.get() for name, variable in self.vars.items()}
-        for key in ("countdown_s", "offset_ms", "speed", "dpi_percent"):
+        for key in ("countdown_s", "offset_ms", "speed", "dpi_percent", "counts_per_unit_x",
+                    "counts_per_unit_y", "anchor_x", "anchor_y", "live_lateness_ms"):
             try:
                 values[key] = float(values[key])
             except ValueError as exc:
@@ -215,19 +276,239 @@ class Application:
     @staticmethod
     def _hotkey_mapping(settings):
         return {"start": settings.start_hotkey, "pause": settings.pause_hotkey,
-                "stop": settings.stop_hotkey, "emergency": "Ctrl+Alt+F10"}
+                "stop": settings.stop_hotkey, "emergency": "Ctrl+Alt+F10", "probe": "Ctrl+Alt+F9"}
+
+    def _emit_note(self, note):
+        if self.stop_signal.is_set():
+            raise RuntimeError("Playback was cancelled before the next input event.")
+        if self.active_run_live:
+            if self.live_session is None or self.loaded_map is None or self.output_index >= len(self.loaded_map.notes):
+                raise RuntimeError("Live note stream lost its map/session; restart required.")
+            raw = self.loaded_map.notes[self.output_index]
+            if raw.time_ms != note.time_ms:
+                raise RuntimeError("Live note timing no longer matches the selected map.")
+            self.live_session.emit(raw)
+        self.output_index += 1
+        self.events.put(("note", (self.preview_generation, note)))
+
+    def _close_live_locked(self):
+        session, self.live_session = self.live_session, None
+        self.active_run_live = False
+        if session is not None:
+            try:
+                session.close()
+            except Exception as exc:
+                self.events.put(("error", f"Mouse session cleanup failed: {exc}"))
+
+    def _cancel_locked(self, reason):
+        self.stop_signal.set()
+        self.pending_live_start = None
+        self.live_preparing = False
+        self._close_live_locked()
+        self.control_generation += 1
+        self.engine.stop(reason)
+
+    def _signal_stop(self):
+        # This lock never encloses preparation, a note callback, or a native API
+        # call. Stop intent remains responsive while those operations run.
+        with self.intent_lock:
+            self.cancel_generation += 1
+            self.stop_signal.set()
+
+    def _current_intent(self):
+        with self.intent_lock:
+            return self.cancel_generation
+
+    def _clear_stop_for_start(self, expected_generation):
+        with self.intent_lock:
+            if expected_generation != self.cancel_generation:
+                return False
+            self.stop_signal.clear()
+            return True
+
+    def set_output_mode(self):
+        self._signal_stop()
+        with self.control_lock:
+            self._cancel_locked("Output mode changed; restart required.")
+            self.preview_generation += 1
+            self.live_requested = self.output_mode_var.get() == "Windows mouse"
+        if self.live_requested:
+            self.banner_var.set("WINDOWS MOUSE MODE - manual calibration/sync. Steam compatibility and RP unverified.")
+            self.start_button.configure(text="Apply live settings (then F6)")
+            self.pause_button.configure(text="Pause / stop live")
+            self.notice_var.set("Capture and calibrate Rhythia, save settings, focus the game, then use the Start hotkey.")
+        else:
+            self.banner_var.set("PREVIEW MODE - no desktop input. Steam compatibility and RP remain unverified.")
+            self.start_button.configure(text="Start / Resume preview")
+            self.pause_button.configure(text="Pause preview")
+
+    def set_probe_axis(self):
+        with self.control_lock:
+            self.probe_axis = self.probe_axis_var.get()
+
+    def _live_prerequisites_locked(self, *, require_map=True):
+        if not IS_WINDOWS:
+            raise RuntimeError("Live mouse output requires Windows 10/11. Preview is available on this platform.")
+        if self.calibration_pending:
+            raise RuntimeError("Wait for the pending calibration capture to finish before live input.")
+        if require_map and (self.loaded_map is None or self.pending_map is not None):
+            raise RuntimeError("Load a valid SSPM map for live playback. The synthetic demo is preview only.")
+        if (self.hotkeys is None or self.hotkeys.last_error or
+                self.hotkey_signature != tuple(self._hotkey_mapping(self.settings).items())):
+            raise RuntimeError("Save settings and resolve all global hotkey errors before live output; emergency stop must be registered.")
+        with self.target_lock:
+            target = self.target
+        if target is None:
+            raise RuntimeError("Capture the Rhythia foreground window in Calibration before live output.")
+        if target.pid == os.getpid():
+            raise RuntimeError("The captured target is this tool. Capture the Rhythia window instead.")
+        calibration = LiveCalibration.from_settings(self.settings).validate()
+        return calibration, target
+
+    def _start_locked(self, *, reference_ns=None, intent_generation=None):
+        if intent_generation is None:
+            intent_generation = self._current_intent()
+        if reference_ns is None:
+            reference_ns = time.perf_counter_ns()
+        if self.calibration_pending:
+            raise RuntimeError("Wait for the calibration capture to finish before starting playback.")
+        if self.pending_map is not None:
+            raise RuntimeError("Load a valid SSPM map or the synthetic preview first.")
+        state = self.engine.snapshot().state
+        if state in (PlaybackState.COUNTDOWN, PlaybackState.RUNNING):
+            return
+        if self.live_preparing:
+            return
+        if state == PlaybackState.PAUSED and not self.live_requested:
+            if self._clear_stop_for_start(intent_generation):
+                self.engine.resume()
+            return
+        if self.live_requested:
+            calibration, target = self._live_prerequisites_locked()
+            if not self._clear_stop_for_start(intent_generation):
+                return
+            self._close_live_locked()
+            self.control_generation += 1
+            self.preview_generation += 1
+            self.live_preparing = True
+            self.run_was_live = True
+            self.engine.stop("Preparing live input; song origin is the Start hotkey time plus countdown.")
+            self.pending_live_start = {
+                "generation": self.control_generation, "intent": intent_generation,
+                "reference_ns": reference_ns, "settings": self.settings,
+                "calibration": calibration, "target": target,
+                "map": self.loaded_map, "chart": self.chart,
+            }
+            return
+        else:
+            with self.target_lock:
+                if self.guard_enabled and self.target is None:
+                    raise RuntimeError("Capture a foreground window before enabling the preview focus guard.")
+        self._close_live_locked()
+        if not self._clear_stop_for_start(intent_generation):
+            return
+        self.run_was_live = False
+        self.preview_generation += 1
+        self.output_index = 0
+        self.engine = PlaybackEngine(self.chart.notes, self._emit_note)
+        try:
+            self.engine.start(countdown_s=self.settings.countdown_s,
+                              offset_ms=self.settings.offset_ms, speed=self.settings.speed)
+        except Exception:
+            self._close_live_locked()
+            raise
+
+    def _live_request_current_locked(self, request):
+        return (self.live_preparing and self.control_generation == request["generation"]
+                and self._current_intent() == request["intent"] and not self.stop_signal.is_set()
+                and self.live_requested and not self.closing.is_set()
+                and self.loaded_map is request["map"] and self.chart is request["chart"])
+
+    def _prepare_live_request(self, request):
+        # Full-chart validation and deadline construction must not block the
+        # hotkey message thread or the control lock. This local engine cannot
+        # emit until the still-current request is committed below.
+        session = None
+        try:
+            with self.control_lock:
+                if not self._live_request_current_locked(request):
+                    return
+            session = LiveSession(request["calibration"], request["target"], request["map"].notes,
+                                  mouse_factory=self.mouse_factory)
+            settings = request["settings"]
+            engine = PlaybackEngine(request["chart"].notes, self._emit_note,
+                                    max_lateness_ms=settings.live_lateness_ms)
+            engine.start(countdown_s=settings.countdown_s, offset_ms=settings.offset_ms,
+                         speed=settings.speed, reference_ns=request["reference_ns"])
+            with self.control_lock:
+                if not self._live_request_current_locked(request):
+                    session.close()
+                    return
+                session.check_target()
+                self.live_session = session
+                self.active_run_live = True
+                self.run_was_live = True
+                self.output_index = 0
+                self.engine = engine
+                self.live_preparing = False
+                session = None  # Ownership transferred to the active run.
+        except Exception as exc:
+            if session is not None:
+                session.close()
+            with self.control_lock:
+                if self._live_request_current_locked(request):
+                    self._cancel_locked(f"Live preparation stopped: {exc}")
+                    self.events.put(("error", str(exc)))
+
+    def _pause_locked(self):
+        if self.live_requested or self.active_run_live:
+            self._cancel_locked("Live pause stopped input. Restart the song, reset the cursor anchor, and start a fresh run.")
+        else:
+            self.engine.pause()
+
+    def _probe_locked(self, intent_generation=None):
+        if intent_generation is None:
+            intent_generation = self._current_intent()
+        if not self.live_requested:
+            raise RuntimeError("Select Windows mouse output before using the calibration probe.")
+        calibration, target = self._live_prerequisites_locked(require_map=False)
+        self._cancel_locked("Calibration probe: restart the song/tool before playback.")
+        if calibration.input_mode == ABSOLUTE_MODE:
+            point = MapNote(0, 1, 1)
+            description = "Absolute probe targeted the calibrated playfield center."
+        elif self.probe_axis == "X":
+            delta = 1 if calibration.anchor_x <= 1.5 else -1
+            point = MapNote(0, calibration.anchor_x + delta, calibration.anchor_y)
+            description = f"Relative X probe sent {delta:+d} grid unit; manually reset the cursor to its anchor."
+        else:
+            delta = 1 if calibration.anchor_y <= 1.5 else -1
+            point = MapNote(0, calibration.anchor_x, calibration.anchor_y + delta)
+            description = f"Relative Y probe sent {delta:+d} grid unit; manually reset the cursor to its anchor."
+        session = LiveSession(calibration, target, (point,), mouse_factory=self.mouse_factory)
+        try:
+            if not self._clear_stop_for_start(intent_generation):
+                return
+            session.emit(point)
+        finally:
+            session.close()
+            self.stop_signal.set()
+        self.events.put(("notice", description))
 
     def save_form(self):
+        self._signal_stop()
         try:
             updated = self._form_settings()
             save_settings(self.settings_path, updated)
             with self.control_lock:
-                self.engine.stop("Settings changed; restart the preview.")
+                self._cancel_locked("Settings changed; restart playback and the song for live output.")
                 self.control_generation += 1
                 self.preview_generation += 1
                 self.settings = updated
             self._register_hotkeys()
-            self.notice_var.set("Settings saved. Live game integration remains disabled.")
+            if self.hotkeys is not None and not self.hotkeys.last_error:
+                self.notice_var.set("Settings saved. For live playback, focus Rhythia and use the Start hotkey after manual synchronization.")
+            elif not IS_WINDOWS:
+                self.notice_var.set("Settings saved. Preview is available here; live mouse output requires Windows.")
         except (ValueError, RuntimeError) as exc:
             self._error(str(exc))
 
@@ -255,43 +536,43 @@ class Application:
     def _hotkey_action(self, action):
         if self.closing.is_set():
             return
+        reference_ns = time.perf_counter_ns()
+        generation = self.control_generation
+        intent = self._current_intent()
+        if action in ("stop", "emergency") or (action == "pause" and self.live_requested):
+            self._signal_stop()
         # Handle controls immediately, without a queued Start surviving a later
         # emergency stop. Never read Tk variables on this message thread.
         with self.control_lock:
-            if action in ("stop", "emergency"):
-                self.control_generation += 1
-                self.engine.stop("Emergency stop; restart required." if action == "emergency" else "Stopped; restart required.")
-            elif action == "pause":
-                self.engine.pause()
-            elif action == "start" and self.pending_map is None:
-                state = self.engine.snapshot().state
-                if state == PlaybackState.PAUSED:
-                    self.engine.resume()
-                elif state not in ACTIVE:
-                    with self.target_lock:
-                        if self.guard_enabled and self.target is None:
-                            self.events.put(("error", "Capture a foreground window before enabling the focus guard."))
-                            return
-                    try:
-                        self.preview_generation += 1
-                        self.engine.start(countdown_s=self.settings.countdown_s,
-                                          offset_ms=self.settings.offset_ms, speed=self.settings.speed)
-                    except (ValueError, RuntimeError) as exc:
-                        self.events.put(("error", str(exc)))
+            if action in ("start", "probe") and (generation != self.control_generation or intent != self._current_intent()):
+                return
+            try:
+                if action in ("stop", "emergency"):
+                    self._cancel_locked("Emergency stop; restart required." if action == "emergency" else "Stopped; restart required.")
+                elif action == "pause":
+                    self._pause_locked()
+                elif action == "start":
+                    self._start_locked(reference_ns=reference_ns, intent_generation=intent)
+                elif action == "probe":
+                    self._probe_locked(intent_generation=intent)
+            except (ValueError, RuntimeError, OSError) as exc:
+                self._cancel_locked(f"Input stopped: {exc}")
+                self.events.put(("error", str(exc)))
 
     def _error(self, message):
         self.notice_var.set(message)
         messagebox.showerror("Rhythia Tool", message, parent=self.root)
 
     def pick_map(self):
-        chosen = filedialog.askopenfilename(parent=self.root, title="Select an SSPM v2 map for silent preview",
+        chosen = filedialog.askopenfilename(parent=self.root, title="Select an SSPM v2 beatmap",
                                             filetypes=[("SSPM beatmaps", "*.sspm"), ("All files", "*.*")])
         if chosen:
             self.select_map(Path(chosen))
 
     def select_map(self, path: Path):
+        self._signal_stop()
         with self.control_lock:
-            self.engine.stop("Loading SSPM map.")
+            self._cancel_locked("Loading SSPM map.")
             self.control_generation += 1
             self.preview_generation += 1
             self.pending_map = path
@@ -306,20 +587,21 @@ class Application:
             self._draw_preview()
             return
         with self.control_lock:
-            self.engine.stop("SSPM map loaded for silent preview.")
+            self._cancel_locked("SSPM map loaded.")
             self.control_generation += 1
             self.preview_generation += 1
             self.pending_map = None
             self.chart = chart
             self.loaded_map = parsed
             self.source_path = path
-            self.engine = PlaybackEngine(chart.notes,
-                lambda note: self.events.put(("note", (self.preview_generation, note))))
+            self.engine = PlaybackEngine(chart.notes, self._emit_note)
+            self.output_index = 0
+            self.run_was_live = False
             self.settings = replace(self.settings, last_map_path=str(path))
         self.vars["last_map_path"].set(str(path))
         authors = ", ".join(display_text(author, 50) for author in parsed.authors[:3]) or "Unknown mapper"
         self.source_var.set(f"{display_text(parsed.title)} · {len(parsed.notes):,} notes · {parsed.duration_ms / 1000:.3f}s\n"
-                            f"SSPM v{parsed.format_version} · {authors} · audio {'present' if parsed.has_audio else 'absent'} · silent preview")
+                            f"SSPM v{parsed.format_version} · {authors} · audio {'present' if parsed.has_audio else 'absent'} · manual song synchronization")
         warnings = " ".join(parsed.warnings)
         self.notice_var.set("SSPM decoded; Steam live compatibility remains unverified. " + display_text(warnings, 250))
         self.start_button.configure(state="normal")
@@ -327,16 +609,20 @@ class Application:
         self._draw_preview()
 
     def load_synthetic(self):
+        self._signal_stop()
         with self.control_lock:
-            self.engine.stop("Synthetic demo loaded; ready to start.")
+            self._cancel_locked("Synthetic demo loaded; ready to preview.")
             self.control_generation += 1
             self.preview_generation += 1
             self.pending_map = None
             self.chart = self.demo
             self.loaded_map = None
             self.source_path = None
-            self.engine = PlaybackEngine(self.demo.notes,
-                lambda note: self.events.put(("note", (self.preview_generation, note))))
+            self.engine = PlaybackEngine(self.demo.notes, self._emit_note)
+            self.output_index = 0
+            self.run_was_live = False
+        self.output_mode_var.set("Preview")
+        self.set_output_mode()
         self.source_var.set(f"{self.demo.title} · {len(self.demo.notes)} synthetic notes · {self.demo.duration_ms / 1000:.1f}s\n"
                             "Generated in this tool; not a Rhythia map and no song audio is played.")
         self.start_button.configure(state="normal")
@@ -349,29 +635,39 @@ class Application:
             return
         try:
             generation = self.control_generation
+            intent = self._current_intent()
             state = self.engine.snapshot().state
-            if state == PlaybackState.PAUSED:
+            if self.live_requested:
+                self._signal_stop()
+                updated = self._form_settings()
+                with self.control_lock:
+                    if generation != self.control_generation:
+                        return
+                    self.settings = updated
+                    self._live_prerequisites_locked()
+                    self._cancel_locked("Live settings applied. Focus Rhythia and use the Start hotkey to begin.")
+                self.notice_var.set(f"Ready: focus Rhythia, manually synchronize the song, and press {self.settings.start_hotkey}. "
+                                    "Relative mode requires resetting the game cursor to the configured anchor first.")
+            elif state == PlaybackState.PAUSED:
                 with self.control_lock:
                     if generation == self.control_generation:
-                        self.engine.resume()
+                        self._start_locked(intent_generation=intent)
             elif state not in ACTIVE:
                 updated = self._form_settings()
-                with self.target_lock:
-                    if self.guard_enabled and self.target is None:
-                        raise ValueError("Capture a foreground window before enabling the focus guard.")
                 with self.control_lock:
                     if generation != self.control_generation:
                         return
                     self.settings = updated
                     self.last_note = None
-                    self.preview_generation += 1
-                    self.engine.start(countdown_s=updated.countdown_s,
-                                      offset_ms=updated.offset_ms, speed=updated.speed)
+                    self._start_locked(intent_generation=intent)
         except (ValueError, RuntimeError) as exc:
             self._error(str(exc))
 
     def pause(self):
-        self.engine.pause()
+        if self.live_requested:
+            self._signal_stop()
+        with self.control_lock:
+            self._pause_locked()
 
     def stop(self):
         self._hotkey_action("stop")
@@ -380,9 +676,11 @@ class Application:
         self._hotkey_action("emergency")
 
     def _set_guard(self):
+        self._signal_stop()
         with self.target_lock:
             self.guard_enabled = self.guard_var.get()
-        self.engine.stop("Focus guard changed; restart required.")
+        with self.control_lock:
+            self._cancel_locked("Preview focus guard changed; restart required. Live focus checking is always enabled.")
 
     def _delayed_capture(self, callback, message):
         if not IS_WINDOWS:
@@ -390,15 +688,23 @@ class Application:
             return
         if self.capture_after_id:
             self.root.after_cancel(self.capture_after_id)
-        self.engine.stop("Calibration started; restart required.")
+        self._signal_stop()
+        with self.control_lock:
+            self._cancel_locked("Calibration started; restart required.")
+            self.calibration_pending = True
         self.notice_var.set(message)
         def finish():
             self.capture_after_id = None
             if not self.closing.is_set():
                 try:
-                    callback()
+                    with self.control_lock:
+                        self._cancel_locked("Calibration capture finished; restart required.")
+                        callback()
                 except (OSError, ValueError, RuntimeError) as exc:
                     self._error(str(exc))
+                finally:
+                    with self.control_lock:
+                        self.calibration_pending = False
         self.capture_after_id = self.root.after(3000, finish)
 
     def capture_corner(self, bottom_right):
@@ -428,25 +734,34 @@ class Application:
             self.window_var.set(f"{target.title or '(untitled)'} · PID {target.pid} · DPI {target.dpi}\n"
                                 f"Window bounds {target.rect}; playfield must still be calibrated separately.")
             self.vars["dpi_percent"].set(str(round(target.dpi / 96 * 100, 2)))
-            self.notice_var.set("Window captured for optional preview focus checking. Target identity is not saved across launches.")
+            self.notice_var.set("Window captured. Live input requires it to stay focused at the same size/position/DPI. Capture again each launch.")
         self._delayed_capture(capture, "Switch to the intended game window within 3 seconds.")
 
     def _pump(self):
         while not self.closing.is_set():
             try:
+                with self.control_lock:
+                    request, self.pending_live_start = self.pending_live_start, None
+                if request is not None:
+                    self._prepare_live_request(request)
                 # Starting and checking focus share one lock so even a zero-
                 # countdown global Start cannot emit before its focus check.
                 with self.control_lock:
                     state = self.engine.snapshot().state
                     with self.target_lock:
                         target, guarded = self.target, self.guard_enabled
-                    if guarded and target is not None and state in ACTIVE:
+                    if self.active_run_live and self.live_session is not None and state in ACTIVE:
+                        self.live_session.check_target()
+                    elif guarded and target is not None and state in ACTIVE:
                         focused = foreground_window()
                         if focused is None or (focused.handle, focused.pid) != (target.handle, target.pid):
                             self.engine.stop("Captured window lost focus; restart required.")
                     self.engine.pump()
+                    if self.active_run_live and self.engine.snapshot().state not in ACTIVE:
+                        self._close_live_locked()
             except Exception as exc:
-                self.engine.stop(f"Preview stopped after error: {exc}; restart required.")
+                with self.control_lock:
+                    self._cancel_locked(f"Playback stopped after error: {exc}; restart the song and tool.")
                 self.events.put(("error", str(exc)))
             self.closing.wait(0.002)
 
@@ -464,12 +779,16 @@ class Application:
                     self.last_note = note
             elif kind == "error":
                 self.notice_var.set(value)
+            elif kind == "notice":
+                self.notice_var.set(value)
         if self.hotkeys and self.hotkeys.last_error:
-            self.engine.stop("Global hotkeys failed; restart required.")
+            with self.control_lock:
+                self._cancel_locked("Global hotkeys failed; input stopped. Resolve hotkey errors before restarting.")
             self.hotkey_var.set("Global hotkeys failed: " + self.hotkeys.last_error)
         snapshot = self.engine.snapshot()
-        self.status_var.set(f"{snapshot.state.value.capitalize()} · {snapshot.message}")
-        self.timing_var.set(f"Simulated song {snapshot.elapsed_ms / 1000:.3f}s · countdown {snapshot.countdown_remaining_s:.2f}s · "
+        output = "Windows mouse" if self.run_was_live else "Preview"
+        self.status_var.set(f"{output} · {snapshot.state.value.capitalize()} · {snapshot.message}")
+        self.timing_var.set(f"Map timeline {snapshot.elapsed_ms / 1000:.3f}s · countdown {snapshot.countdown_remaining_s:.2f}s · "
                             f"emitted {snapshot.emitted_count}/{len(self.chart.notes)} · max lateness {snapshot.max_lateness_ms:.2f}ms")
         self._draw_preview()
         self.after_id = self.root.after(30, self._refresh)
@@ -501,18 +820,22 @@ class Application:
                 min_x, min_y, max_x, max_y = self.chart.bounds
                 raw_x = min_x + note.x * (max_x - min_x)
                 raw_y = min_y + note.y * (max_y - min_y)
-                self.position_var.set(f"SSPM point ({raw_x:.3f}, {raw_y:.3f}) at {note.time_ms:.0f}ms · preview only, no game input")
+                self.position_var.set(f"SSPM point ({raw_x:.3f}, {raw_y:.3f}) at {note.time_ms:.0f}ms · " +
+                                      ("Windows mouse output" if self.run_was_live else "preview, no desktop input"))
             else:
                 px, py = self.settings.physical_position(note.x, note.y)
                 self.position_var.set(f"Preview target: normalized ({note.x:.3f}, {note.y:.3f}) → physical pixels ({px}, {py})")
         else:
-            self.position_var.set("Silent preview only. No desktop input is generated.")
+            self.position_var.set("No note emitted yet. Live mode starts from the focused game using its Start hotkey."
+                                      if self.live_requested else "Preview only. No desktop input is generated.")
 
     def shutdown(self):
         if self.closing.is_set():
             return
         self.closing.set()
-        self.engine.stop("Application closed.")
+        self._signal_stop()
+        with self.control_lock:
+            self._cancel_locked("Application closed.")
         if self.after_id:
             self.root.after_cancel(self.after_id)
         if self.capture_after_id:
@@ -583,7 +906,7 @@ def simulate_map(path: Path):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Rhythia Tool: SSPM preview; Steam live integration pending.")
+    parser = argparse.ArgumentParser(description="Rhythia Tool: SSPM preview and calibrated Windows mouse playback (GUI live mode).")
     parser.add_argument("--settings", type=Path, default=None, help="Use a specific local settings JSON file.")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--self-check", action="store_true", help="Run a headless deterministic demo simulation.")

@@ -1,87 +1,122 @@
 # Rhythia Tool
 
-A Python/Tkinter tool that reads SSPM v2 beatmaps and previews their notes, with timing controls, calibration settings, global Windows hotkeys, and standalone Windows packaging scripts. The target is **Steam/CAPO Games Rhythia on Windows**, with game version **0.2.0 reported by the user**.
+Python/Tkinter map preview and **Windows mouse autoplay** for local SSPM v2 beatmaps. The target is Windows 10/11 x64 and Steam/CAPO Games Rhythia, with game version **0.2.0 reported by the user**. Mouse playback uses normal Windows `SendInput`; it does not modify the game or submit scores itself.
 
-**The interface provides a silent preview, not live autoplay.** Map parsing is implemented and tested. Steam cursor/input behavior, song synchronization, normal score acceptance, and ranked RP remain **unverified**, so live mouse output is disabled. No code submits scores or changes game eligibility.
+**Live mouse playback is implemented, but compatibility with Steam Rhythia is experimental.** The map parser and input/timing logic have been tested with simulated input on Linux. Native Windows input, actual gameplay synchronization, normal score acceptance, and ranked RP have **not** been verified. The tool starts in **Preview** mode every time you open it.
 
-## Supported maps and confirmed sample
+## Download and launch on Windows
 
-Select a local `.sspm` file directly; locating the game's map folder is unnecessary. The parser follows the public [SSPM v2 specification](https://github.com/basils-garden/types/blob/4095da95def637822acef7403b8f16278226e169/sspm/v2.md). It extracts titles, mapper names, note timestamps, and raw note coordinates. It supports the standard `ssp_note` marker schema. Other container versions, additional/custom marker schemas, malformed data, and files exceeding parser limits produce explicit errors.
+1. [Download the latest source ZIP](https://github.com/sttreets/rhythia/archive/refs/heads/main.zip).
+2. Right-click the ZIP, choose **Extract All**, and open the extracted **rhythia-main** folder.
+3. Install **64-bit Windows Python 3.11–3.14** from [python.org](https://www.python.org/downloads/windows/). Include **Tcl/Tk and IDLE** and the **Python Launcher**. Python 3.13 or 3.14 is suitable.
+4. Double-click **run.bat**. File Explorer may display it as **run**.
 
-The supplied sample, **Sporty-O - Let Me Hit It (Audiostalkers Original Mix)(Cut Ver.)**, identifies mapper **dxprso** and contains **220 notes**, from **491 ms to 31,897 ms**. It was parsed and simulated without moving the mouse. Its off-grid/quantum coordinates are retained. The preview expands its viewport to contain them; this drawing transform is not a verified mapping to the Steam game's playfield.
+If the launcher closes with an error, open Command Prompt in that folder and enter `run.bat` to keep the message visible. No administrator access is required. There are no third-party runtime packages; Tkinter and `ctypes` are included with Python.
 
-The sample contains embedded MP3 and PNG data, identified by their signatures only. Audio and images are not decoded, extracted, or played. Its marker SHA-1 field is all zeros, so the parser warns that marker integrity is unverified. It also reports 24 trailing footer bytes outside the declared blocks, which are ignored. Neither the supplied map nor its media is included in the repository; tests generate their own fixtures.
+The launcher creates or reuses `.venv`, checking Windows, x64 architecture, Python version, and Tkinter. If your default Python is unsupported but Python 3.14 is installed, run `py -3.14 -m venv .venv` before launching. Python 3.15 is not supported by the pinned packaging dependency.
 
-The Steam game version `0.2.0` and SSPM format version `2` are separate version numbers. The open-source [Rhythia/Client README](https://github.com/Rhythia/Client/blob/9200e16441c94f0cffca8ee10beb4e889235c56a/README.md) explicitly distinguishes its project from Steam/CAPO Games Rhythia. Its similarly numbered releases, input implementation, and score eligibility rules do not establish Steam compatibility.
+## First run: preview, calibrate, then enable mouse playback
 
-To identify an exact installed Steam build later, check the game's About/Settings/title screen and Steam's Build ID when available. **Library → Rhythia → Properties → Installed Files → Browse** opens the installation directory; the game executable's **Properties → Details** may show another version string. For other maps, use the game's own import/export or open-folder command if available and enable File Explorer's file extensions. No universal Steam Rhythia map path has been verified.
+**Rhythia must be running and focused for live playback.** Loading a map into this tool does not start the game, select its song, or play audio.
 
-## Run from source on Windows
+1. Click **Select local map…** and open your `.sspm` file. No map folder is needed. Keep **Output: Preview** selected and start once to check the notes. The synthetic demo also previews without controlling your mouse.
+2. In Rhythia, select the same map and leave its window at the resolution, position, display scaling, and playfield layout you intend to use.
+3. In **Calibration**, set the playfield's **outer 3 × 3 grid edges** in physical screen pixels. Use the two **Capture … in 3s** buttons, moving your pointer to the requested corner during each countdown, or enter the values. Do not capture the centers of the corner cells. Select **Absolute screen** or **Relative calibrated** input as explained below.
+4. Click **Capture foreground window in 3s**, then switch to Rhythia before three seconds pass. Confirm that the displayed captured title belongs to Rhythia. Capturing a window does not locate its playfield automatically.
+5. Set timing and hotkeys, then click **Save settings**. In **Playback**, choose **Output: Windows mouse**. This selection enables mouse output for this launch only. All global hotkeys, including emergency stop, must register successfully.
+6. With Rhythia focused, use **Ctrl+Alt+F9** for a single calibration probe before trying a song. Check that the in-game cursor reaches the expected position. Adjust calibration and repeat until it does; detailed directions follow below.
+7. Restart the selected song from its beginning. With Rhythia focused, press **F6** at your chosen synchronization event. The tool waits its configured countdown, then follows the map timestamps. **F8** stops; **Ctrl+Alt+F10** is the emergency stop.
 
-Use Windows 10/11, 64-bit, and **64-bit Windows Python 3.11–3.14** from [python.org](https://www.python.org/downloads/windows/). Include the **Tcl/Tk and IDLE** component and Python Launcher when installing. Python 3.13 or 3.14 is a suitable choice. The packaging version pinned here does not support Python 3.15.
+For a first timing attempt, use playback speed **1.0**, offset **0 ms**, and countdown **0 s**, and press F6 at the observed start of the song timeline. This is a manual synchronization procedure; it does not establish the Steam build's exact timestamp origin or guarantee a hit. See [Synchronization](#synchronization) before adjusting it.
 
-Extract/clone this repository and double-click `run.bat`, or open Command Prompt in the repository and run:
+Clicking **Apply live settings (then F6)** applies the current form without moving the cursor. Switch to Rhythia and press the start hotkey to actually begin. Global hotkeys use the most recently applied/saved settings; editing fields alone does not apply them.
 
-```bat
-run.bat
+### Absolute screen calibration
+
+Use **Absolute screen** only if a probe actually moves the **in-game** cursor to the corresponding screen position. Some cursor modes may ignore or reinterpret absolute Windows movement. A moving desktop pointer alone does not establish compatibility.
+
+The SSPM format defines coordinates `0`, `1`, and `2` as the three cell centers. This tool maps the surrounding frame `[-0.5, 2.5]` to your calibrated screen rectangle. For example, in a 900-pixel-wide playfield, the three column centers are approximately 150, 450, and 750 pixels from its left edge. **Ctrl+Alt+F9** targets map coordinate `(1, 1)`, the center of the field. The invert options reverse the corresponding axis.
+
+Bounds are physical desktop pixels, including negative coordinates on monitors left of or above the primary display. The Windows package requests Per-Monitor V2 DPI awareness. The recorded screen size and Windows scaling fields are reference information; the tool does not multiply the calibrated pixel bounds by that scale again. It also records the captured target's actual bounds and DPI. Recalibrate and recapture after changing window position, resolution, scaling, monitor, or layout. The complete calibrated field must fit inside the captured window.
+
+### Relative calibrated input
+
+Use **Relative calibrated** if Rhythia accepts normal relative mouse movement. This is not a guarantee of raw input support. In **Mouse control**, enter independently measured **mouse counts per grid unit X/Y**; one grid unit is the distance from one cell center to the next. The initial value of 300 is a placeholder, not a verified game sensitivity.
+
+1. Keep the game's sensitivity, Windows pointer speed, and acceleration settings fixed. Acceleration can make a single counts-per-cell measurement unreliable at other movement speeds.
+2. Set **Starting cursor map X/Y** to a location you can manually reproduce, normally `(1, 1)` for the center. Place the **in-game cursor** there yourself.
+3. Select the X probe axis, save settings, focus the captured Rhythia window, and press **Ctrl+Alt+F9**. The probe requests one positive grid unit, or one negative unit when the configured anchor is greater than `1.5`, so it stays inside the field. Check whether the cursor moved exactly one cell. Adjust the X count and horizontal inversion if necessary.
+4. Reset the cursor to the configured anchor, repeat for Y, and adjust its count and inversion. **Reset the in-game cursor to the anchor before every probe and every fresh run.**
+
+There is no automatic homing, cursor-position feedback, or game sensitivity detection. The first movement is calculated from your configured anchor. Physical mouse movement during playback, uncalibrated acceleration, or game cursor clamping can invalidate subsequent relative positions. Stop and start again from the anchor if that happens.
+
+## Synchronization
+
+The tool does not start or pause Rhythia, monitor song audio, detect the gameplay state, or change the game's speed. You start the same map in the game and use the global start hotkey while Rhythia has focus. Choose an observable event that you can repeat, such as the beginning of the game's song timeline. Set countdown to the measured delay from that event to the map's timestamp origin; do not assume the default three-second countdown matches Rhythia.
+
+Each note is scheduled using a monotonic high-resolution clock:
+
+```text
+note deadline = F6 time + countdown + timing offset + map timestamp / speed
 ```
 
-The launcher uses an existing `.venv\Scripts\python.exe`, or creates `.venv` using `py -3` and then a `python` fallback. It checks Windows, x64 interpreter architecture, Python version, and Tkinter. If your default interpreter is unsupported but Python 3.14 is also installed, create `.venv` explicitly with `py -3.14 -m venv .venv` before launching. It does not require administrator access. There are no third-party runtime packages; Tkinter and Windows API access through `ctypes` come with Python.
+A positive offset emits later; a negative offset emits earlier and may cause movement during countdown. Offset is in wall-clock milliseconds. The tool's speed must match the speed actually selected in the game; changing it here does not change game audio. For the supplied map, the first note is at **491 ms**, so with zero countdown/offset and speed 1.0 it is scheduled 491 ms after F6, not immediately at F6.
 
-For a direct launch after creating a suitable environment:
+Test short runs, observe the timing, and adjust your chosen start event or offset. Windows scheduling and human hotkey timing introduce jitter. These controls provide manual alignment, not automatic audio synchronization; Steam-specific timestamp origin, song-start latency, and judging behavior remain unverified. A precise clock alone cannot establish synchronization with a separate song.
 
-```bat
-.venv\Scripts\python.exe -m rhythia_tool
-```
+**Live pause cancels playback and disarms input.** Restart the song from the beginning, restore the relative anchor if needed, and press F6 for a fresh run. The same restart procedure applies after focus loss, an emergency stop, timing loss, or an error. Preview pause can resume its own simulated timeline; it does not pause the game's audio.
 
-## Preview, calibration, and controls
+The live lateness cutoff defaults to **50 ms**, configurable from **1–250 ms**. If a due note is older than that limit, playback stops before sending it. Preview uses 250 ms. These cutoffs detect scheduling delays; they cannot detect audio drift or a manual start at the wrong moment.
 
-1. Choose **Select local map…** and open an SSPM v2 file. The interface shows its title, mapper, note count, timeline length, embedded-audio presence, and warnings. Alternatively, choose **Load synthetic demo** to use generated notes. The preview moves a marker inside the interface; your desktop cursor stays under your control.
-2. Enter the playfield's left/top corner and width/height in **physical screen pixels**. Negative screen coordinates are valid for monitors left of or above the primary screen. Optional delayed corner capture gives you time to position the cursor before recording a corner. Capturing calibration reads the cursor position; it does not move it.
-3. Record the relevant display scale/resolution and selected input mode. Calibration is used for preview pixel positions only; no verified mapping to Steam's absolute/relative cursor mode exists yet. The Windows package requests Per-Monitor V2 DPI awareness. Recalibrate after changing resolution, DPI scale, game window position, or playfield layout.
-4. Set countdown, timing offset, and playback speed. A positive offset delays notes; a negative offset brings them earlier and may emit notes during countdown. Speed scales the note timeline, so `2.0` plays it twice as fast; offset remains measured in wall-clock milliseconds. These controls change the simulated schedule, not game audio.
-5. Optionally capture a foreground window for the focus guard. With that guard enabled, the simulation stops when a different window becomes foreground; it does not automatically resume. If no target is captured, the UI makes that state visible.
-6. Start, pause/resume, or stop the silent preview. Status shows the current state, elapsed timeline, lateness, and errors. Invalid/unsupported maps disable playback until a valid map or the synthetic demo is loaded. When the focus guard is enabled, start with its captured window focused using the global start hotkey.
+## Controls and settings
 
-| Action | Default Windows global hotkey |
+| Action | Default global hotkey on Windows |
 | --- | --- |
-| Start/resume simulation | F6 |
-| Pause simulation | F7 |
-| Stop/reset | F8 |
+| Start live playback / start or resume preview | F6 |
+| Pause preview / cancel live playback | F7 |
+| Stop | F8 |
+| Single calibration probe | Ctrl+Alt+F9, fixed |
 | Emergency stop | Ctrl+Alt+F10, fixed |
 
-Start/pause/stop hotkeys are configurable; Ctrl+Alt+F10 stays reserved for emergency stop. Supported syntax includes `F6`, `Ctrl+Alt+F6`, or `Shift+A`. Global hotkeys require Windows and can fail when another program owns a binding. The interface reports registration failures; choose another available binding. Buttons remain available. On other platforms, use the buttons for simulation. F12 is rejected for global bindings because [Windows reserves it for debuggers](https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winuser/nf-winuser-registerhotkey.md).
+Start/pause/stop bindings are configurable, for example `F6`, `Ctrl+Alt+S`, or `Shift+A`. The probe and emergency bindings stay reserved. [Windows reserves F12 for debuggers](https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winuser/nf-winuser-registerhotkey.md), so it cannot be used. If any hotkey registration fails, live playback remains unavailable; choose unused bindings or close the conflicting program. On Linux, use the buttons for preview only.
 
-Choose **Timing & hotkeys → Save settings** to persist your changes. Global hotkeys use the last applied settings; editing a field alone does not apply it to an active run. Saving stops the current preview, so restart afterward. Settings are saved to `%LOCALAPPDATA%\RhythiaTool\settings.json` on Windows. On Linux, they use `$XDG_CONFIG_HOME/rhythia-tool/settings.json` or `~/.config/rhythia-tool/settings.json`. Use `--settings PATH` to select another file. Settings are not written into the game installation. Damaged settings are reported and preserved until you explicitly save a replacement.
+Live input checks the captured foreground window, process identity, rectangle, and DPI before each movement and while running. It stops if those change, input fails, hotkeys fail, or timing falls behind. Restoring focus does not resume the old run. Foreground inspection and `SendInput` are separate Windows calls, so a focus switch in the tiny interval between them cannot be made atomic. Closing the tool stops and disarms its session.
 
-## Synchronization and game integration
+Saving settings stops playback. Settings live in `%LOCALAPPDATA%\RhythiaTool\settings.json` on Windows, or `$XDG_CONFIG_HOME/rhythia-tool/settings.json` / `~/.config/rhythia-tool/settings.json` on Linux. `--settings PATH` selects another file. No game credentials are stored. The captured target window and choice of live output are deliberately not saved across launches. Damaged settings are reported and preserved until you explicitly save a replacement. Older preview-only cursor-mode preferences reset to **Unverified** and need a fresh mode selection/calibration.
 
-The simulator uses a monotonic high-resolution clock and schedules against elapsed map time. Pausing freezes its own timeline and resuming continues from that time. **It cannot pause or synchronize a song playing in Rhythia.** Do not use this pause/resume behavior as evidence of synchronization with a real run.
+## Maps and compatibility evidence
 
-A reliable gameplay start procedure still requires authoritative Steam-specific evidence for its audio start event/countdown, timestamp origin, pause behavior, cursor mode, coordinate mapping, focus behavior, and speed modifiers. Parsing the supplied map does not verify those behaviors. There is no documented live autoplay start sequence and live input remains disabled. If game/audio synchronization is lost in a future verified integration, stop and restart the song and tool from the beginning instead of guessing a new offset.
+The parser follows the public [SSPM v2 specification](https://github.com/basils-garden/types/blob/4095da95def637822acef7403b8f16278226e169/sspm/v2.md). It extracts title, mapper names, timestamps, and raw note coordinates for the standard `ssp_note` marker schema. Other container versions/custom marker schemas, malformed data, and oversized files produce clear errors. Empty maps cannot play.
 
-The scheduler uses absolute deadlines and stops before emitting a note more than 250 ms late; a fresh start is required afterward. Windows scheduling can introduce jitter, so the high-resolution clock does not guarantee exact delivery times.
+The supplied **Sporty-O - Let Me Hit It (Audiostalkers Original Mix)(Cut Ver.)** map identifies mapper **dxprso** and has **220 notes**, from **491 ms to 31,897 ms**. It was parsed and simulated without moving the desktop cursor. Quantum/off-grid positions are retained. Preview expands to show them; live playback uses the fixed `[-0.5, 2.5]` frame and rejects any map with a note outside it before enabling input. Live coordinates are not rescaled to each map's extents.
 
-`rhythia_tool/mouse.py` contains a generic guarded Windows `SendInput` adapter with relative/absolute movement and focus/window/DPI checks. It is tested using fakes only and is intentionally not wired to the interface or CLI. Its presence does not establish native Windows or Steam input compatibility. Any future live integration must use normal Windows input and the game's normal submission flow, retain emergency stop, and stop on focus loss or errors.
+Live playback jumps to note positions at their scheduled timestamps; it does not synthesize a smooth path. Equal-time notes are sent in file order, but a single cursor cannot guarantee judgments at different positions simultaneously. Whether a movement is accepted and judged depends on the game's actual input and hit rules, which have not been established for this Steam build.
 
-## Score eligibility evidence
+The sample contains embedded MP3 and PNG signatures. Media is not decoded, extracted, or played. Its all-zero marker SHA-1 produces an integrity warning; 24 footer bytes outside the declared blocks are ignored. A nonzero checksum mismatch is an error. Neither the uploaded map nor its media is included in the repository; tests generate their own fixtures.
 
-**Steam/CAPO score and ranked RP acceptance are unverified.** No authoritative rule for this installed build has been established. A parsed map, successful cursor movement, or a local results screen would not by itself prove accepted ranked RP. No bypasses, score forging, or alternate submission flow are implemented.
+The user-reported Steam game version `0.2.0`, this tool's version, and SSPM format version `2` are separate identifiers. The open-source [Rhythia/Client README](https://github.com/Rhythia/Client/blob/9200e16441c94f0cffca8ee10beb4e889235c56a/README.md) distinguishes that project from Steam/CAPO Games Rhythia; its input and eligibility rules do not establish Steam behavior. To record your exact installed Steam build, check the game's About/Settings and Steam's Build ID when available. **Library → Rhythia → Properties → Installed Files → Browse** opens the installation directory. No universal Steam map folder has been verified.
 
-The cloud environment returned proxy HTTP 403 responses for official Steam/CAPO pages. Proposed network additions were saved in environment settings for `store.steampowered.com`, `steamcommunity.com`, `rhythia.com`, `www.rhythia.com`, and `capo.games`. Review/save those settings and publish/update the environment as prompted, then retry the official documentation. Saved configuration alone does not establish access or eligibility. Remaining questions include accepted input modes, map/ranked eligibility, submission checks, and the treatment of automated runs. Rules from the separate open-source client are not Steam eligibility evidence.
+Windows API behavior follows the documented [`SendInput`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-sendinput), [`MOUSEINPUT`](https://learn.microsoft.com/windows/win32/api/winuser/ns-winuser-mouseinput), and [`RegisterHotKey`](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-registerhotkey) contracts. Relative input may be affected by Windows pointer speed and acceleration. Windows can block injection into a program at a higher integrity level; keep normal privilege levels rather than using elevation as a workaround. No input hooks, game memory access, button/keyboard injection, or bypass of game input restrictions is implemented.
+
+## Scores and ranked RP
+
+**Normal Steam score acceptance and ranked RP eligibility remain unknown.** No authoritative eligibility rule for this installed build or accepted automated run has been verified. Successful movement, map completion, or a local results screen would not by itself prove ranked RP acceptance. There is no claim that this tool earns RP.
+
+The game remains responsible for its normal gameplay and score submission flow. This tool only sends cursor movement; it does not forge scores, alter eligibility flags, call submission endpoints, or bypass input restrictions. Official Steam/CAPO documentation requests from the cloud environment still returned proxy HTTP 403 responses. Proposed network additions were saved in environment settings, but that alone does not establish access or eligibility. Remaining questions include which input modes are supported, automated-run rules, map/ranked eligibility, and server-side submission checks. Rules from the separate open-source client are not evidence for Steam eligibility.
 
 ## Command-line inspection and simulation
 
-These commands read local files and never control the mouse or play audio:
+These commands never control the mouse or play audio:
 
 ```bat
 .venv\Scripts\python.exe -m rhythia_tool --inspect-map "C:\Maps\example.sspm"
 .venv\Scripts\python.exe -m rhythia_tool --simulate-map "C:\Maps\example.sspm"
+.venv\Scripts\python.exe -m rhythia_tool --self-check
 ```
 
-`--inspect-map` prints JSON metadata, note timing/coordinate ranges, warnings, and a SHA-256 file fingerprint. `--simulate-map` uses a fake clock and list sink to verify that every parsed note is emitted in order; it runs without waiting for real song time and reports completion/lateness. Both report Steam and RP compatibility as unverified. Invalid files produce a clear error and nonzero exit code.
+Inspection prints metadata, note ranges, warnings, and a SHA-256 file fingerprint. Simulation uses a fake clock and list sink to check that every note is emitted in order without waiting for real song time. Invalid files return a clear error and nonzero exit code. Steam/RP compatibility remains unverified. The self-check emits all 32 synthetic notes.
 
-To open the same map in the interface:
+To open a map in the interface, initially in Preview mode:
 
 ```bat
 run.bat --map "C:\Maps\example.sspm"
@@ -89,45 +124,54 @@ run.bat --map "C:\Maps\example.sspm"
 
 ## Build a standalone Windows executable
 
-On an actual Windows 10/11 x64 computer with the Python installation above:
+On an actual Windows 10/11 x64 computer with the supported Python installation above, double-click **build.bat**, or run:
 
 ```bat
 build.bat
 ```
 
-The script creates/reuses `.venv`, installs `requirements-build.txt` noninteractively, runs the unit tests, and invokes PyInstaller with `RhythiaTool.spec`. It stops on a failed command and preserves its error code. The build dependency is pinned to **PyInstaller 6.16.0**; its transitive dependencies are resolved by pip. Network access to PyPI and its file host is needed for an uncached install.
+The script creates/reuses `.venv`, installs `requirements-build.txt`, runs the tests without injecting real mouse input, and invokes PyInstaller with `RhythiaTool.spec`. It stops on failure. Build dependency **PyInstaller 6.16.0** is pinned; pip resolves its transitive dependencies. An uncached installation needs PyPI and its file host.
 
-The result is `dist\RhythiaTool.exe`: a single GUI executable with Tkinter bundled, an `asInvoker` manifest, and Per-Monitor V2 DPI awareness. The recipient does not need Python. Test that exact executable on Windows before distributing it. It is unsigned; signing and SmartScreen reputation are separate release tasks. Administrator access is not required.
+The result is **`dist\RhythiaTool.exe`**, a single GUI executable with Tkinter bundled, an `asInvoker` manifest, and Per-Monitor V2 DPI awareness. The recipient does not need Python. Test that exact executable on Windows before distributing it. It is unsigned; signing and SmartScreen reputation are separate release tasks. Administrator access is not required.
 
-Build on Windows using Windows Python. This repository does not use Wine or claim that a Linux build produces a Windows executable. See the [PyInstaller 6.16 operating-mode documentation](https://github.com/pyinstaller/pyinstaller/blob/v6.16.0/doc/operating-mode.rst) and [Windows manifest documentation](https://github.com/MicrosoftDocs/win32/blob/docs/desktop-src/SbsCs/application-manifests.md).
+**No Windows executable was built in the Linux cloud environment.** Build with Windows Python on Windows; this repository does not use Wine or claim a Linux build produces a Windows executable. See the [PyInstaller operating-mode documentation](https://github.com/pyinstaller/pyinstaller/blob/v6.16.0/doc/operating-mode.rst).
 
 ## Verification
-
-Run tests without touching the desktop cursor:
 
 ```bat
 python -m unittest discover -s tests -v
 python -m rhythia_tool --self-check
 ```
 
-The tests exercise SSPM v2 parsing and malformed-file rejection, quantum coordinates and preview transforms, timing with simulated input, pause/resume, offsets, speed, stop/focus guards, settings validation, and Windows API behavior through mocks. The `--self-check` command independently emits all 32 synthetic notes against a fake clock; use `--simulate-map` to check a local map.
+For full Linux cloud validation, including Tk functional checks:
 
-Cloud validation: `python3 scripts/cloud_validate.py` last passed **107 tests**, including **eight Tk functional tests**, plus the headless self-check on Linux. On a headless Linux host it starts and cleans up an isolated Xvfb display; the saved environment setup prepares Xvfb outside the checkout. GUI checks covered valid-map loading/playback, invalid-map gating, a complete threaded 32-note demo, controls, and settings. CLI checks exercised the actual entry point, malformed-file exit codes, inspection, and full-map simulation. The 16 mouse-adapter tests used fake native calls; hotkey registration/error cleanup was also simulated. The supplied 220-note map was parsed and fully simulated separately. These checks never injected desktop input. Without a desktop/display, direct unittest discovery skips the eight Tk tests; a skipped run is not equivalent to full cloud validation.
+```sh
+python3 scripts/cloud_validate.py
+```
 
-Development verification in the cloud environment uses Linux. Native Windows hotkey registration, physical display/DPI behavior, Windows batch scripts, packaging, and gameplay have **not** been run there. No Windows `.exe` is included until a suitable Windows build environment is available. Passing simulation tests does not establish live autoplay, audio synchronization, or RP eligibility.
+The cloud validation starts and cleans up an isolated Xvfb display when Linux is headless. Without a display, ordinary unittest discovery skips Tk tests; a skipped run is not equivalent to full validation.
+
+Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls and the live-mode prerequisites using fakes. The full cloud run passed **156 tests with no skips**. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse (220 events each); no OS input was sent.
+
+**Native Windows input and hotkeys, physical display/DPI behavior, Windows batch execution, executable packaging, Steam gameplay, actual song synchronization, and RP acceptance have not been tested in this Linux environment.** Simulated tests establish the tool's logic, not the game's acceptance of input or scores.
 
 ## Troubleshooting
 
 | Problem | Action |
 | --- | --- |
-| Python or Tkinter unavailable | Install a supported x64 Python with Tcl/Tk. If the existing `.venv` uses another interpreter, rename it and rerun the launcher. |
-| Launcher closes before you can read an error | Open Command Prompt in this folder and run `run.bat`; the shell retains the error text. |
-| Hotkey registration error | Choose an unused binding, apply settings, and retry. Ctrl+Alt+F10 is the fixed emergency binding; close a conflicting application if necessary. F12 cannot be a global binding. |
-| Local map cannot start | Read the parser error. Only SSPM v2 with the standard note schema is supported; older versions/custom markers are rejected. Empty maps cannot play. Load the synthetic demo to check the interface independently. |
-| Preview is silent despite embedded audio | Expected. Embedded audio is identified but not decoded or played; game/song synchronization is unverified. |
-| Missing marker checksum or trailing-bytes warning | Review the warning. All-zero SHA-1 means marker integrity was not verified; trailing data outside declared blocks is ignored. A nonzero checksum mismatch is an error. |
-| Calibration is shifted after a display change | Re-enter or recapture physical-pixel bounds on the intended display; record the new scaling and resolution. |
-| Simulation stops when switching windows or falling behind | The focus/lateness guard requires a fresh start. Capture the intended window again if necessary, then start deliberately. |
-| Settings cannot be saved | Check directory permissions or launch with `--settings` pointing to a writable location. Do not run as administrator as a workaround. |
-| Build fails downloading packages | Check the reported PyPI/network/TLS error and retry after fixing connectivity. Do not disable certificate verification. |
-| Executable exits unexpectedly | Run from source in Command Prompt to see startup diagnostics; report the error and Python/Windows versions. |
+| Python or Tkinter unavailable | Install supported x64 Windows Python with Tcl/Tk. Rename an incompatible `.venv`, then rerun `run.bat`. |
+| Launcher closes too quickly | Open Command Prompt in this folder and run `run.bat` to retain the error. |
+| Nothing moves | Confirm Windows mouse output, a real SSPM map, calibrated mode, registered hotkeys, and the captured Rhythia window focused. Start with F6; clicking Apply live settings only applies fields. |
+| Probe moves desktop pointer but not game cursor | The selected game input mode may not accept that movement. Test a supported game cursor setting or relative calibration; desktop movement is not evidence of Steam compatibility. |
+| Relative playback drifts | Reset the game cursor to the configured anchor before each run. Recheck sensitivity, acceleration, counts, and inversion; avoid physical mouse movement during playback. Stop if clamping or drift invalidates calibration. |
+| Cursor is shifted after a display/window change | Recapture the window and recalibrate physical-pixel bounds at the final resolution, monitor, and scale. |
+| Window capture fails | Click Capture foreground window, then switch to Rhythia within three seconds. The tool itself is not a valid target. |
+| Live playback refuses a map | Read the error. The full field must fit inside the captured window; every note must lie inside `[-0.5, 2.5]`. Unsupported formats/custom marker schemas are rejected. |
+| Hotkey registration error | Choose unused bindings or close the conflicting program. Ctrl+Alt+F9/F10 are reserved; F12 cannot be used. Live playback requires working hotkeys. |
+| It stops after Alt+Tab, window movement, or pausing | Expected. Restart the song, recapture/recalibrate if needed, restore the relative anchor, and start fresh with F6. |
+| Timing is wrong or a lateness error appears | Stop and restart from the chosen song origin. Check countdown/offset/speed; the tool does not detect audio or pause the game. Address scheduling delays before increasing the cutoff. |
+| Preview is silent despite embedded audio | Expected. Rhythia plays the song; the tool does not decode or play map audio. |
+| Map checksum/trailing-bytes warning | All-zero marker SHA-1 means integrity is unverified; footer bytes outside declared blocks are ignored. A nonzero checksum mismatch is rejected. |
+| Settings cannot be saved | Check permissions or choose a writable file with `--settings`; administrator access is not needed. |
+| Build cannot download packages | Fix the reported network/TLS error, then retry. Preserve certificate verification. |
+| Executable exits unexpectedly | Launch the source in Command Prompt to obtain diagnostics; record the error and Python/Windows versions. |

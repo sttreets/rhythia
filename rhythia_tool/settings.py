@@ -27,6 +27,13 @@ class Settings:
     screen_height: int = 1080
     dpi_percent: float = 100.0
     input_mode: str = "Unverified"
+    counts_per_unit_x: float = 300.0
+    counts_per_unit_y: float = 300.0
+    anchor_x: float = 1.0
+    anchor_y: float = 1.0
+    invert_x: bool = False
+    invert_y: bool = False
+    live_lateness_ms: float = 50.0
     start_hotkey: str = "F6"
     pause_hotkey: str = "F7"
     stop_hotkey: str = "F8"
@@ -36,6 +43,8 @@ class Settings:
         for name, low, high in (
             ("countdown_s", 0, 3600), ("offset_ms", -5000, 5000),
             ("speed", 0.1, 4), ("dpi_percent", 25, 800),
+            ("counts_per_unit_x", 0.001, 100000), ("counts_per_unit_y", 0.001, 100000),
+            ("anchor_x", -0.5, 2.5), ("anchor_y", -0.5, 2.5), ("live_lateness_ms", 1, 250),
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -47,8 +56,11 @@ class Settings:
             low = -100000 if name in ("left", "top") else 1
             if type(value) is not int or not low <= value <= 100000:
                 raise SettingsError(f"{name} must be a whole number between {low} and 100000.")
-        if self.input_mode not in ("Unverified", "Absolute desktop (unverified)", "Relative/raw (unverified)"):
+        if self.input_mode not in ("Unverified", "Absolute screen", "Relative calibrated"):
             raise SettingsError("Unknown cursor input mode.")
+        for name in ("invert_x", "invert_y"):
+            if type(getattr(self, name)) is not bool:
+                raise SettingsError(f"{name} must be true or false.")
         for name in ("start_hotkey", "pause_hotkey", "stop_hotkey"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise SettingsError(f"{name} must not be empty.")
@@ -82,6 +94,8 @@ def load_settings(path: Path) -> Settings:
         unknown = set(data) - {field.name for field in fields(Settings)}
         if unknown:
             raise SettingsError("Unknown settings fields: " + ", ".join(sorted(unknown)))
+        if data.get("input_mode") in ("Absolute desktop (unverified)", "Relative/raw (unverified)"):
+            data["input_mode"] = "Unverified"
         return Settings(**data).validate()
     except SettingsError:
         raise
