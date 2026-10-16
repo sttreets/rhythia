@@ -16,7 +16,7 @@ class SettingsError(ValueError):
 
 @dataclass(frozen=True)
 class Settings:
-    countdown_s: float = 3.0
+    countdown_s: float = 0.0
     offset_ms: float = 0.0
     speed: float = 1.0
     left: int = 0

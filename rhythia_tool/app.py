@@ -16,10 +16,12 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from .chart import display_text, preview_sspm
+from .calibration_ui import PlayfieldSelector
 from .demo import load_demo
 from .live import ABSOLUTE_MODE, RELATIVE_MODE, LiveCalibration, LiveSession
 from .mouse import WindowsMouse
 from .playback import PlaybackEngine, PlaybackState
+from .quickstart import QuickStartPanel
 from .settings import Settings, SettingsError, default_settings_path, load_settings, save_settings
 from .sspm import MapFormatError, MapNote, load_sspm
 from .windows import GlobalHotkeys, IS_WINDOWS, cursor_position, foreground_window, set_dpi_awareness
@@ -59,6 +61,8 @@ class Application:
         self.output_index = 0
         self.probe_axis = "X"
         self.calibration_pending = False
+        self.playfield_selector = None
+        self.quick_setup_intent = None
         self.hotkeys = None
         self.hotkey_signature = None
         self.pending_map: Path | None = None
@@ -87,6 +91,8 @@ class Application:
         self.window_var = tk.StringVar(value="No foreground window captured.")
         self.guard_var = tk.BooleanVar(value=False)
         self.notice_var = tk.StringVar(value=self.settings_warning)
+        self.quick_setup_var = tk.StringVar(value="Open Rhythia, then set up the playfield. Your calibration will be saved.")
+        self.advanced_var = tk.BooleanVar(value=False)
         self._build_ui()
         self.load_synthetic()
         self._register_hotkeys()
@@ -100,8 +106,10 @@ class Application:
         ttk.Label(outer, text="Rhythia Tool", font=("Segoe UI", 18, "bold")).pack(anchor="w")
         ttk.Label(outer, textvariable=self.banner_var,
                   foreground="#a14212", wraplength=800).pack(anchor="w", pady=(2, 10))
-        tabs = ttk.Notebook(outer)
+        tabs = self.tabs = ttk.Notebook(outer)
         tabs.pack(fill="both", expand=True)
+        quick = self.quick_panel = QuickStartPanel(tabs, self)
+        tabs.add(quick, text="Quick start")
         playback = ttk.Frame(tabs, padding=12)
         calibration = ttk.Frame(tabs, padding=12)
         settings_tab = ttk.Frame(tabs, padding=12)
@@ -112,6 +120,9 @@ class Application:
         tabs.add(settings_tab, text="Timing & hotkeys")
         tabs.add(mouse_tab, text="Mouse control")
         tabs.add(help_tab, text="Start guide")
+        self.advanced_tabs = {"Playback": playback, "Calibration": calibration,
+                              "Timing & hotkeys": settings_tab, "Mouse control": mouse_tab,
+                              "Start guide": help_tab}
 
         row = ttk.Frame(playback)
         row.pack(fill="x")
@@ -250,10 +261,96 @@ class Application:
         text.pack(fill="both", expand=True)
         text.insert("1.0", help_text)
         text.configure(state="disabled")
+        for tab in self.advanced_tabs.values():
+            tabs.hide(tab)
+        ttk.Checkbutton(outer, text="Show advanced settings", variable=self.advanced_var,
+                        command=self._toggle_advanced).pack(anchor="w", pady=(8, 0))
         ttk.Separator(outer).pack(fill="x", pady=10)
         ttk.Label(outer, textvariable=self.status_var, wraplength=800).pack(anchor="w")
         ttk.Label(outer, textvariable=self.timing_var).pack(anchor="w", pady=(3, 0))
         ttk.Label(outer, textvariable=self.notice_var, foreground="#a14212", wraplength=800).pack(anchor="w", pady=(3, 0))
+
+    def _toggle_advanced(self):
+        if self.advanced_var.get():
+            for tab in self.advanced_tabs.values():
+                self.tabs.add(tab)
+        else:
+            self.tabs.select(self.quick_panel)
+            for tab in self.advanced_tabs.values():
+                self.tabs.hide(tab)
+
+    def show_advanced(self, tab_name="Playback"):
+        self.advanced_var.set(True)
+        self._toggle_advanced()
+        self.tabs.select(self.advanced_tabs[tab_name])
+
+    def quick_setup(self):
+        if not IS_WINDOWS:
+            self._error("Playfield setup requires Windows. You can still preview a map here.")
+            return
+        if self.playfield_selector is not None:
+            self.playfield_selector.cancel()
+        # Keep output off throughout setup. The final Ready button explicitly
+        # enables it; selecting corners never starts gameplay or sends input.
+        self.output_mode_var.set("Preview")
+        self.set_output_mode()
+        if self.vars["input_mode"].get() == "Unverified":
+            self.vars["input_mode"].set(ABSOLUTE_MODE)
+        self.quick_setup_var.set("Switch to Rhythia within 3 seconds. Then click the TOP-LEFT and BOTTOM-RIGHT outer corners of the whole playfield.")
+
+        def capture():
+            target = foreground_window()
+            if target is None or target.pid == os.getpid():
+                raise ValueError("Switch to Rhythia during the countdown, then try Set up playfield again.")
+            intent = self._current_intent()
+            self.quick_setup_intent = intent
+
+            def cancelled():
+                self.playfield_selector = None
+                self.quick_setup_intent = None
+                self.calibration_pending = False
+                self.quick_setup_var.set("Setup cancelled. Click Set up playfield to try again.")
+
+            def selected(left, top, width, height):
+                self.playfield_selector = None
+                self.quick_setup_intent = None
+                self.calibration_pending = False
+                if self.closing.is_set() or self._current_intent() != intent:
+                    self.quick_setup_var.set("Setup cancelled by Stop. Try again when ready.")
+                    return
+                for name, value in (("left", left), ("top", top), ("width", width),
+                                    ("height", height), ("dpi_percent", round(target.dpi / 96 * 100, 2))):
+                    self.vars[name].set(str(value))
+                if self.save_form():
+                    with self.target_lock:
+                        self.target = target
+                    self.window_var.set(f"{display_text(target.title) or 'Rhythia window'} · playfield saved")
+                    self.quick_setup_var.set("Playfield saved. Click Ready to play, then switch to Rhythia. Check the center with Ctrl+Alt+F9.")
+                    self.root.lift()
+
+            self.playfield_selector = PlayfieldSelector(self.root, target, selected, cancelled)
+
+        self._delayed_capture(capture, self.quick_setup_var.get())
+
+    def quick_ready(self):
+        if self.loaded_map is None or self.pending_map is not None:
+            self._error("Choose your .sspm map first.")
+            return
+        if self.calibration_pending:
+            self._error("Finish setting up the playfield first.")
+            return
+        if not self.save_form():
+            return
+        try:
+            with self.control_lock:
+                self._live_prerequisites_locked()
+            self.output_mode_var.set("Windows mouse")
+            self.set_output_mode()
+            key = self.settings.start_hotkey
+            self.quick_setup_var.set(f"Ready. Switch to Rhythia and check the center with Ctrl+Alt+F9. Press {key} at your song start reference; F8 stops.")
+            self.notice_var.set(f"Ready for {key}. The tool does not start the song. Countdown: {self.settings.countdown_s:g}s.")
+        except (ValueError, RuntimeError, OSError) as exc:
+            self._error(str(exc))
 
     def _form_settings(self) -> Settings:
         values = {name: variable.get() for name, variable in self.vars.items()}
@@ -509,8 +606,10 @@ class Application:
                 self.notice_var.set("Settings saved. For live playback, focus Rhythia and use the Start hotkey after manual synchronization.")
             elif not IS_WINDOWS:
                 self.notice_var.set("Settings saved. Preview is available here; live mouse output requires Windows.")
+            return True
         except (ValueError, RuntimeError) as exc:
             self._error(str(exc))
+            return False
 
     def _register_hotkeys(self):
         signature = tuple(self._hotkey_mapping(self.settings).items())
@@ -689,6 +788,7 @@ class Application:
         if self.capture_after_id:
             self.root.after_cancel(self.capture_after_id)
         self._signal_stop()
+        capture_intent = self._current_intent()
         with self.control_lock:
             self._cancel_locked("Calibration started; restart required.")
             self.calibration_pending = True
@@ -698,13 +798,16 @@ class Application:
             if not self.closing.is_set():
                 try:
                     with self.control_lock:
+                        if capture_intent != self._current_intent():
+                            self.quick_setup_var.set("Setup cancelled by Stop. Try again when ready.")
+                            return
                         self._cancel_locked("Calibration capture finished; restart required.")
-                        callback()
+                    callback()
                 except (OSError, ValueError, RuntimeError) as exc:
                     self._error(str(exc))
                 finally:
                     with self.control_lock:
-                        self.calibration_pending = False
+                        self.calibration_pending = self.playfield_selector is not None
         self.capture_after_id = self.root.after(3000, finish)
 
     def capture_corner(self, bottom_right):
@@ -768,6 +871,9 @@ class Application:
     def _refresh(self):
         if self.closing.is_set():
             return
+        if (self.playfield_selector is not None and
+                self.quick_setup_intent != self._current_intent()):
+            self.playfield_selector.cancel()
         for _ in range(1000):
             try:
                 kind, value = self.events.get_nowait()
@@ -791,6 +897,7 @@ class Application:
         self.timing_var.set(f"Map timeline {snapshot.elapsed_ms / 1000:.3f}s · countdown {snapshot.countdown_remaining_s:.2f}s · "
                             f"emitted {snapshot.emitted_count}/{len(self.chart.notes)} · max lateness {snapshot.max_lateness_ms:.2f}ms")
         self._draw_preview()
+        self.quick_panel.refresh()
         self.after_id = self.root.after(30, self._refresh)
 
     def _draw_preview(self):
@@ -834,6 +941,8 @@ class Application:
             return
         self.closing.set()
         self._signal_stop()
+        if self.playfield_selector is not None:
+            self.playfield_selector.cancel()
         with self.control_lock:
             self._cancel_locked("Application closed.")
         if self.after_id:

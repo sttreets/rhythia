@@ -1,0 +1,109 @@
+name: Windows download
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'rhythia_tool/**'
+      - 'scripts/package_windows.py'
+      - 'scripts/publish_windows_release.py'
+      - 'tests/**'
+      - 'launch.py'
+      - 'requirements*.txt'
+      - 'RhythiaTool.spec'
+      - 'windows.manifest'
+      - 'run.bat'
+      - 'build.bat'
+      - 'README.md'
+
+permissions:
+  contents: read
+
+# Keep the last successful download until its replacement has passed all checks.
+concurrency:
+  group: windows-download
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'sttreets/rhythia' && github.ref == 'refs/heads/main'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Windows x64 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install build dependencies
+        run: python -m pip --disable-pip-version-check install --no-input -r requirements-build.txt
+      - name: Test parser, timing, interface, and fake mouse input
+        run: python -m unittest discover -s tests -v
+      - name: Check deterministic playback without mouse input
+        run: python -m rhythia_tool --self-check
+      - name: Build standalone application
+        run: python -m PyInstaller --clean --noconfirm RhythiaTool.spec
+      - name: Smoke test packaged application without mouse input
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath .\dist\RhythiaTool.exe -ArgumentList '--self-check' -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw 'Packaged self-check timed out.'
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Packaged self-check failed with exit code $($process.ExitCode)."
+          }
+          $process = Start-Process -FilePath .\dist\RhythiaTool.exe -ArgumentList '--inspect-map', 'definitely-missing.sspm' -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw 'Packaged invalid-map check timed out.'
+          }
+          if ($process.ExitCode -ne 2) {
+            throw "Packaged invalid-map check returned $($process.ExitCode), expected 2."
+          }
+      - name: Package easy downloads and checksums
+        run: python scripts/package_windows.py --commit ${{ github.sha }}
+      - name: Store verified Windows downloads
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-download
+          path: |
+            dist/RhythiaTool.exe
+            dist/RhythiaTool-Windows.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.repository == 'sttreets/rhythia' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out publication helper
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Download verified Windows files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-download
+          path: dist
+      - name: Publish dedicated experimental Windows download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_COMMIT: ${{ github.sha }}
+          BUILD_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/publish_windows_release.py

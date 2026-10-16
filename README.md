@@ -4,32 +4,33 @@ Python/Tkinter map preview and **Windows mouse autoplay** for local SSPM v2 beat
 
 **Live mouse playback is implemented, but compatibility with Steam Rhythia is experimental.** The map parser and input/timing logic have been tested with simulated input on Linux. Native Windows input, actual gameplay synchronization, normal score acceptance, and ranked RP have **not** been verified. The tool starts in **Preview** mode every time you open it.
 
-## Download and launch on Windows
+## Easiest download: Windows app
 
-1. [Download the latest source ZIP](https://github.com/sttreets/rhythia/archive/refs/heads/main.zip).
-2. Right-click the ZIP, choose **Extract All**, and open the extracted **rhythia-main** folder.
-3. Install **64-bit Windows Python 3.11–3.14** from [python.org](https://www.python.org/downloads/windows/). Include **Tcl/Tk and IDLE** and the **Python Launcher**. Python 3.13 or 3.14 is suitable.
-4. Double-click **run.bat**. File Explorer may display it as **run**.
+[**Download RhythiaTool.exe**](https://github.com/sttreets/rhythia/releases/download/windows-build/RhythiaTool.exe) · [Portable ZIP](https://github.com/sttreets/rhythia/releases/download/windows-build/RhythiaTool-Windows.zip) · [Build status](https://github.com/sttreets/rhythia/actions/workflows/windows-build.yml)
 
-If the launcher closes with an error, open Command Prompt in that folder and enter `run.bat` to keep the message visible. No administrator access is required. There are no third-party runtime packages; Tkinter and `ctypes` are included with Python.
+Double-click **RhythiaTool.exe**. **No Python, installer, or administrator access is needed.** For the portable ZIP, choose **Extract All** first, then open the executable. These links are published by the Windows build workflow after its tests and executable smoke checks succeed. If the very first build is still running, check Build status and wait for it to finish.
 
-The launcher creates or reuses `.venv`, checking Windows, x64 architecture, Python version, and Tkinter. If your default Python is unsupported but Python 3.14 is installed, run `py -3.14 -m venv .venv` before launching. Python 3.15 is not supported by the pinned packaging dependency.
+The Windows app is unsigned and experimental. Download it from this repository's release. Windows may show an unknown publisher notice; code signing is not included.
 
-## First run: preview, calibrate, then enable mouse playback
+## Quick start
 
-**Rhythia must be running and focused for live playback.** Loading a map into this tool does not start the game, select its song, or play audio.
+The app opens on one page. Advanced settings are hidden until you need them.
 
-1. Click **Select local map…** and open your `.sspm` file. No map folder is needed. Keep **Output: Preview** selected and start once to check the notes. The synthetic demo also previews without controlling your mouse.
-2. In Rhythia, select the same map and leave its window at the resolution, position, display scaling, and playfield layout you intend to use.
-3. In **Calibration**, set the playfield's **outer 3 × 3 grid edges** in physical screen pixels. Use the two **Capture … in 3s** buttons, moving your pointer to the requested corner during each countdown, or enter the values. Do not capture the centers of the corner cells. Select **Absolute screen** or **Relative calibrated** input as explained below.
-4. Click **Capture foreground window in 3s**, then switch to Rhythia before three seconds pass. Confirm that the displayed captured title belongs to Rhythia. Capturing a window does not locate its playfield automatically.
-5. Set timing and hotkeys, then click **Save settings**. In **Playback**, choose **Output: Windows mouse**. This selection enables mouse output for this launch only. All global hotkeys, including emergency stop, must register successfully.
-6. With Rhythia focused, use **Ctrl+Alt+F9** for a single calibration probe before trying a song. Check that the in-game cursor reaches the expected position. Adjust calibration and repeat until it does; detailed directions follow below.
-7. Restart the selected song from its beginning. With Rhythia focused, press **F6** at your chosen synchronization event. The tool waits its configured countdown, then follows the map timestamps. **F8** stops; **Ctrl+Alt+F10** is the emergency stop.
+1. **Choose your map:** select the `.sspm` for the song you will play.
+2. **Set up playfield:** open Rhythia in windowed or borderless mode with its playfield visible. Click **Set up playfield…**, switch to Rhythia during the three-second countdown, then click the **top-left** and **bottom-right outer corners of the whole 3 × 3 playfield** in the overlay. The game window and calibration are captured together. Your settings save automatically. Escape cancels.
+3. **Ready to play:** click the button, switch to Rhythia, and check the center using **Ctrl+Alt+F9**. Start the same song yourself and press **F6** at your chosen song timeline start. **F8** stops; **Ctrl+Alt+F10** emergency stops.
 
-For a first timing attempt, use playback speed **1.0**, offset **0 ms**, and countdown **0 s**, and press F6 at the observed start of the song timeline. This is a manual synchronization procedure; it does not establish the Steam build's exact timestamp origin or guarantee a hit. See [Synchronization](#synchronization) before adjusting it.
+Fresh settings use **0 seconds countdown**, **0 ms offset**, and **1× speed**. Saved settings retain your choices. With a nonzero countdown, press F6 that many seconds before the song timeline starts. The tool does not start or detect audio, and manual timing still needs checking in the game. If the game cursor ignores Absolute screen, select **Relative calibrated**, open **Relative mode settings**, and follow the calibration instructions below.
 
-Clicking **Apply live settings (then F6)** applies the current form without moving the cursor. Switch to Rhythia and press the start hotkey to actually begin. Global hotkeys use the most recently applied/saved settings; editing fields alone does not apply them.
+**Rhythia must be running and focused.** Loading a map does not launch the game, select its song, or play audio. Do not click the centers of the corner cells during setup. After restarting the tool, repeat setup to select the correct game window. Stop and restart the song after losing focus, changing its window/display, or pausing live playback.
+
+## Source launcher and advanced settings
+
+If you prefer the source, [download its ZIP](https://github.com/sttreets/rhythia/archive/refs/heads/main.zip), choose **Extract All**, install **64-bit Windows Python 3.11–3.14** with **Tcl/Tk and IDLE** and the **Python Launcher** from [python.org](https://www.python.org/downloads/windows/), then double-click **run.bat** in **rhythia-main**. No third-party runtime packages are needed. The launcher creates/reuses `.venv`; run it in Command Prompt to retain any error message.
+
+**Show advanced settings** reveals map preview, numeric calibration, custom hotkeys, playback speed, relative sensitivity and detailed instructions. Save edited settings, or use **Ready to play** to apply the current form. Merely editing fields does not change an active run. The advanced Playback button **Apply live settings (then F6)** also applies fields without moving the cursor; use F6 from the focused game to begin.
+
+Calibration uses physical desktop pixels and a captured foreground window. The guided selector places its overlay over that window, including monitors with negative coordinates. If an exclusive fullscreen game hides the field when the overlay appears, use windowed/borderless mode or Advanced → Calibration's delayed corner captures. The whole calibrated field must fit inside the captured window.
 
 ### Absolute screen calibration
 
@@ -52,7 +53,7 @@ There is no automatic homing, cursor-position feedback, or game sensitivity dete
 
 ## Synchronization
 
-The tool does not start or pause Rhythia, monitor song audio, detect the gameplay state, or change the game's speed. You start the same map in the game and use the global start hotkey while Rhythia has focus. Choose an observable event that you can repeat, such as the beginning of the game's song timeline. Set countdown to the measured delay from that event to the map's timestamp origin; do not assume the default three-second countdown matches Rhythia.
+The tool does not start or pause Rhythia, monitor song audio, detect the gameplay state, or change the game's speed. You start the same map in the game and use the global start hotkey while Rhythia has focus. Choose an observable event that you can repeat, such as the beginning of the game's song timeline. Set countdown to the measured delay from that event to the map's timestamp origin; do not assume a countdown matches Rhythia's own song-start delay.
 
 Each note is scheduled using a monotonic high-resolution clock:
 
@@ -134,7 +135,7 @@ The script creates/reuses `.venv`, installs `requirements-build.txt`, runs the t
 
 The result is **`dist\RhythiaTool.exe`**, a single GUI executable with Tkinter bundled, an `asInvoker` manifest, and Per-Monitor V2 DPI awareness. The recipient does not need Python. Test that exact executable on Windows before distributing it. It is unsigned; signing and SmartScreen reputation are separate release tasks. Administrator access is not required.
 
-**No Windows executable was built in the Linux cloud environment.** Build with Windows Python on Windows; this repository does not use Wine or claim a Linux build produces a Windows executable. See the [PyInstaller operating-mode documentation](https://github.com/pyinstaller/pyinstaller/blob/v6.16.0/doc/operating-mode.rst).
+**The Linux cloud environment cannot build a native Windows executable locally.** The repository's Windows download workflow runs on Windows x64, tests the source with fake input, builds with PyInstaller, smoke-tests the exact executable without sending input, and publishes the dedicated experimental `windows-build` prerelease with SHA-256 checksums and source commit. A successful published build establishes packaging, not game compatibility. For local builds, use Windows Python on Windows; this repository does not use Wine or claim a Linux build produces a Windows executable. See the [PyInstaller operating-mode documentation](https://github.com/pyinstaller/pyinstaller/blob/v6.16.0/doc/operating-mode.rst).
 
 ## Verification
 
@@ -151,9 +152,9 @@ python3 scripts/cloud_validate.py
 
 The cloud validation starts and cleans up an isolated Xvfb display when Linux is headless. Without a display, ordinary unittest discovery skips Tk tests; a skipped run is not equivalent to full validation.
 
-Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls and the live-mode prerequisites using fakes. The full cloud run passed **156 tests with no skips**. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse (220 events each); no OS input was sent.
+Tests cover SSPM parsing and damaged-file rejection, quantum coordinates, preview transforms, timing/offset/speed/deadlines with fake clocks and simulated input, settings, and mock Windows API calls. Live-session tests cover fixed-frame calibration, absolute and relative movement, inversion, relative rounding, whole-map preflight, focus/error latching, and concurrent stopping without real input. GUI tests exercise playback controls and the live-mode prerequisites using fakes. The full cloud run passed **194 tests with no skips**, including guided setup, two-corner selection, emergency cancellation during setup, and release packaging with a fake API. The supplied 220-note map also completed both absolute and relative live-session paths with a fake clock and fake mouse (220 events each); no OS input was sent.
 
-**Native Windows input and hotkeys, physical display/DPI behavior, Windows batch execution, executable packaging, Steam gameplay, actual song synchronization, and RP acceptance have not been tested in this Linux environment.** Simulated tests establish the tool's logic, not the game's acceptance of input or scores.
+**Native Windows input and hotkeys, physical display/DPI behavior, Windows batch execution, Steam gameplay, actual song synchronization, and RP acceptance have not been tested in this Linux environment.** The separate Windows workflow records its source-test, packaging and executable smoke-check results in Build status. Simulated tests establish the tool's logic, not the game's acceptance of input or scores.
 
 ## Troubleshooting
 
